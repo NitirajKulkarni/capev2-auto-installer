@@ -1,0 +1,15 @@
+[Unit]
+Description=CAPEv2 Rooter Privileged Network Helper Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart={{PYTHON_PATH}} {{CAPE_ROOT}}/utils/rooter.py -g {{CAPE_USER}}
+Restart=always
+RestartSec=5
+RuntimeDirectory=cuckoo-rooter
+
+[Install]
+WantedBy=multi-user.target

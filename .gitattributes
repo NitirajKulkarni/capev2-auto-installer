@@ -1,0 +1,20 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Explicitly declare shell scripts to always have LF line endings
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Python, config, and markdown files
+*.py text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.xml text eol=lf
+*.ps1 text eol=crlf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+LICENSE text eol=lf

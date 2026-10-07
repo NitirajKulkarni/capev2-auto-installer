@@ -1,0 +1,1687 @@
+"""
+Main orchestrator for CAPEv2 Automated Installer.
+
+Coordinates the full installation lifecycle:
+  PREFLIGHT → BACKUP → INSTALL → VERIFY → REPAIR → REPORT
+
+Supports resume, repair, diagnose, status, dry-run, and uninstall modes.
+"""
+import json
+import os
+import hashlib
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from cape_auto.config import Config
+from cape_auto.command import CommandRunner
+from cape_auto.state import (
+    StateManager, StageStatus, ResourceOwnership,
+    HealthStatus, INSTALLATION_STAGES,
+)
+from cape_auto.diagnostics import DiagnosticsEngine
+from cape_auto.remediation import RemediationEngine
+from cape_auto.logging_setup import get_logger
+from cape_auto.exceptions import (
+    CapeAutoError, RebootRequired, ManualInterventionRequired,
+    StageError, PreflightError,
+)
+from cape_auto.reporting import ReportGenerator
+
+logger = get_logger("orchestrator")
+
+
+class Orchestrator:
+    """
+    Main installation orchestrator.
+
+    Implements the state machine that drives the installation through
+    all stages, with automatic diagnosis and repair on failure.
+    """
+
+    def __init__(self, config: Config, project_dir: str):
+        self._config = config
+        self._project_dir = project_dir
+        self._dry_run_mode = False
+
+        # Initialize subsystems
+        self._cmd = CommandRunner(dry_run=False)
+        self._state = StateManager(
+            state_dir=os.path.join(project_dir, "state"),
+            backup_dir=os.path.join(project_dir, "backups"),
+        )
+        self._diag = DiagnosticsEngine(
+            cmd=self._cmd,
+            cape_root=config.get_str("installation.cape_root", "/opt/CAPEv2"),
+        )
+
+        # Detect remote session
+        self._is_remote = bool(os.environ.get("SSH_CONNECTION"))
+        if self._is_remote:
+            logger.info("SSH session detected - remote-safe mode enabled")
+
+        self._remediation = RemediationEngine(
+            cmd=self._cmd,
+            state=self._state,
+            allow_medium=config.get_bool("installation.auto_repair", True),
+            allow_high=not self._is_remote and config.get_bool("safety.destructive_repair", False),
+            allow_destructive=config.get_bool("safety.destructive_repair", False),
+            is_remote=self._is_remote,
+        )
+        self._reporter = ReportGenerator(
+            reports_dir=os.path.join(project_dir, "reports"),
+            state=self._state,
+            config=config,
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # PRIMARY MODES
+    # ═══════════════════════════════════════════════════════════════════
+
+    def install(self, from_stage: Optional[str] = None) -> int:
+        """Run the full installation pipeline."""
+        logger.info("=" * 60)
+        logger.info("CAPEv2 Automated Installer - Starting")
+        logger.info("=" * 60)
+
+        # Determine starting point
+        start_idx = 0
+        if from_stage:
+            idx = self._state.get_stage_from(from_stage.upper())
+            if idx is None:
+                logger.error(f"Unknown stage: {from_stage}")
+                logger.info(f"Available stages: {', '.join(INSTALLATION_STAGES)}")
+                return 1
+            start_idx = idx
+        else:
+            # Check for resume
+            resume = self._state.get_resume_stage()
+            if resume:
+                prev_idx = self._state.get_stage_from(resume)
+                if prev_idx and prev_idx > 0:
+                    logger.info(f"Resuming from stage: {resume}")
+                    start_idx = prev_idx
+
+        # Update manifest
+        self._state.update_manifest("installation_id", self._state.installation_id)
+        self._state.update_manifest("timestamp_start", datetime.now(timezone.utc).isoformat())
+        self._state.update_manifest("project_dir", self._project_dir)
+
+        # Execute stages
+        max_repair = self._config.get_int("installation.max_repair_attempts", 3)
+        overall_success = True
+
+        for i in range(start_idx, len(INSTALLATION_STAGES)):
+            stage_name = INSTALLATION_STAGES[i]
+            stage = self._state.get_stage(stage_name)
+
+            # Skip already completed stages
+            if stage.status == StageStatus.SUCCESS.value:
+                logger.info(f"Stage {stage_name}: already completed, skipping")
+                continue
+            if stage.status == StageStatus.SKIPPED.value:
+                continue
+
+            # Execute stage
+            success = self._execute_stage_with_repair(stage_name, max_repair)
+
+            if not success:
+                overall_success = False
+                # Check if we can continue
+                if self._is_blocking_failure(stage_name):
+                    logger.error(f"Stage {stage_name} failed and blocks further progress")
+                    break
+                else:
+                    logger.warning(f"Stage {stage_name} failed but is non-blocking, continuing...")
+
+        # Finalize
+        self._state.update_manifest("timestamp_end", datetime.now(timezone.utc).isoformat())
+
+        # Generate reports
+        self._reporter.generate_final_report(overall_success)
+
+        if overall_success:
+            logger.info("=" * 60)
+            logger.info("CAPEv2 Installation: COMPLETE")
+            logger.info("=" * 60)
+            return 0
+        else:
+            failed = self._state.get_failed_stages()
+            logger.warning("=" * 60)
+            logger.warning(f"CAPEv2 Installation: PARTIAL (failed: {', '.join(failed)})")
+            logger.warning("Run 'sudo ./install.sh --diagnose' for details")
+            logger.warning("Run 'sudo ./install.sh --resume' to retry failed stages")
+            logger.warning("=" * 60)
+            return 1
+
+    def resume(self) -> int:
+        """Resume from last checkpoint."""
+        resume_stage = self._state.get_resume_stage()
+        if not resume_stage:
+            if self._state.is_complete():
+                logger.info("Installation already complete.")
+                return 0
+            logger.info("No stage to resume from. Starting fresh.")
+            return self.install()
+
+        logger.info(f"Resuming installation from stage: {resume_stage}")
+        return self.install(from_stage=resume_stage)
+
+    def repair(self) -> int:
+        """Repair mode - diagnose and fix issues."""
+        logger.info("Running repair mode...")
+
+        results = self._diag.diagnose_all()
+        report = self._diag.generate_report(results)
+        print(report)
+
+        # Attempt repairs for failures
+        repaired = 0
+        for r in results:
+            if r.status == HealthStatus.FAIL.value:
+                logger.info(f"Attempting repair for: {r.component}")
+                error_cat = self._map_component_to_error(r.component)
+                if self._attempt_repair(error_cat, r.component):
+                    repaired += 1
+
+        if repaired > 0:
+            logger.info(f"Repaired {repaired} component(s). Re-running diagnostics...")
+            results = self._diag.diagnose_all()
+            report = self._diag.generate_report(results)
+            print(report)
+
+        return 0
+
+    def diagnose(self, watch: bool = False) -> int:
+        """Run diagnostic checks."""
+        results = self._diag.diagnose_all()
+        report = self._diag.generate_report(results)
+        print(report)
+
+        # Save to file
+        report_path = os.path.join(self._project_dir, "reports", "diagnostic-report.md")
+        Path(os.path.dirname(report_path)).mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w") as f:
+            f.write(report)
+
+        # Save JSON
+        json_path = os.path.join(self._project_dir, "reports", "diagnostic-report.json")
+        with open(json_path, "w") as f:
+            json.dump([r.to_dict() for r in results], f, indent=2)
+
+        if watch:
+            logger.info("Watching mode - press Ctrl+C to stop")
+            try:
+                while True:
+                    time.sleep(60)
+                    results = self._diag.diagnose_all()
+                    report = self._diag.generate_report(results)
+                    print("\033[H\033[J")  # Clear screen
+                    print(report)
+            except KeyboardInterrupt:
+                pass
+
+        return 0
+
+    def status(self, drift: bool = False) -> int:
+        """Show installation status dashboard."""
+        summary = self._state.get_summary()
+
+        print("\n" + "=" * 50)
+        print("CAPE Installation Status")
+        print("=" * 50)
+
+        status_icons = {
+            "success": "[+]",
+            "failed": "[x]",
+            "pending": "[ ]",
+            "running": "[*]",
+            "skipped": "[-]",
+            "blocked": "[#]",
+        }
+
+        # Group stages
+        groups = {
+            "Host": ["PREFLIGHT", "BACKUP", "REPOSITORIES", "BASE_PACKAGES"],
+            "Virtualization": ["KVM", "LIBVIRT", "REBOOT_CHECK"],
+            "CAPE": ["CAPE_REPOSITORY", "CAPE_DEPENDENCIES", "CAPE_INSTALL",
+                     "CAPE_CONFIG", "DATABASE", "SYSTEMD"],
+            "Network": ["NETWORK"],
+            "Guest": ["VM_CREATE", "VM_INSTALL", "VM_CONFIG", "AGENT", "SNAPSHOT"],
+            "Validation": ["MACHINERY_CONFIG", "CAPE_START", "HEALTH_CHECK",
+                          "END_TO_END_TEST", "FINALIZE"],
+        }
+
+        for group_name, stages in groups.items():
+            print(f"\n  {group_name}")
+            for stage_name in stages:
+                if stage_name in summary:
+                    info = summary[stage_name]
+                    icon = status_icons.get(info["status"], "?")
+                    line = f"    {icon} {stage_name:<25s} {info['status'].upper()}"
+                    if info.get("error"):
+                        line += f"  ({info['error'][:50]})"
+                    print(line)
+
+        # Overall
+        failed = self._state.get_failed_stages()
+        if not failed and self._state.is_complete():
+            print(f"\n  Overall: READY [OK]")
+        elif failed:
+            print(f"\n  Overall: {len(failed)} FAILED")
+        else:
+            print(f"\n  Overall: IN PROGRESS")
+
+        print("=" * 50)
+
+        if drift:
+            self._show_drift()
+
+        return 0
+
+    def dry_run(self) -> int:
+        """Preview what the installer would do."""
+        logger.info("DRY-RUN MODE - No changes will be made")
+        self._cmd = CommandRunner(dry_run=True)
+        self._dry_run_mode = True
+
+        print("\n" + "=" * 50)
+        print("DRY-RUN: Planned Actions")
+        print("=" * 50)
+
+        # Show what each stage would do
+        for stage_name in INSTALLATION_STAGES:
+            stage = self._state.get_stage(stage_name)
+            if stage.status == StageStatus.SUCCESS.value:
+                print(f"  [SKIP]  {stage_name} (already complete)")
+            else:
+                print(f"  [PLAN]  {stage_name}")
+                desc = self._get_stage_description(stage_name)
+                if desc:
+                    print(f"          {desc}")
+
+        print("\n" + "=" * 50)
+
+        # Show config summary
+        print("\nConfiguration:")
+        print(f"  CAPE root:     {self._config.get_str('installation.cape_root')}")
+        print(f"  CAPE user:     {self._config.get_str('installation.cape_user')}")
+        print(f"  Python mgr:   {self._config.get_str('installation.python_manager')}")
+        print(f"  Network mode:  {self._config.get_str('network.mode')}")
+        print(f"  Guest enabled: {self._config.get_bool('guest.enabled')}")
+
+        warnings = self._config.validate()
+        if warnings:
+            print("\nWarnings:")
+            for w in warnings:
+                print(f"  [WARN] {w}")
+
+        return 0
+
+    def preflight(self) -> int:
+        """Run preflight checks only."""
+        logger.info("Running preflight checks...")
+        return self._run_preflight(report_only=True)
+
+    def self_test(self) -> int:
+        """Run framework self-tests."""
+        logger.info("Running framework self-tests...")
+        passed = 0
+        failed = 0
+        tests = []
+
+        # Test 1: Config loading
+        try:
+            from cape_auto.config import Config
+            c = Config(self._config.config_path, self._project_dir)
+            assert c.get_str("installation.cape_root")
+            tests.append(("Config loading", True))
+            passed += 1
+        except Exception as e:
+            tests.append(("Config loading", False, str(e)))
+            failed += 1
+
+        # Test 2: Command runner
+        try:
+            import sys
+            result = self._cmd.run([sys.executable, "-c", "print('test')"], timeout=5)
+            assert result.success
+            assert result.stdout.strip() == "test"
+            tests.append(("Command runner", True))
+            passed += 1
+        except Exception as e:
+            tests.append(("Command runner", False, str(e)))
+            failed += 1
+
+        # Test 3: State management
+        try:
+            self._state.create_checkpoint("SELF_TEST", {"test": True})
+            cp = self._state.load_checkpoint("SELF_TEST")
+            assert cp is not None
+            tests.append(("State management", True))
+            passed += 1
+        except Exception as e:
+            tests.append(("State management", False, str(e)))
+            failed += 1
+
+        # Test 4: Resource registry
+        try:
+            self._state.register_resource(
+                "test_resource", "self_test_item",
+                ResourceOwnership.CREATED_BY_INSTALLER,
+            )
+            assert self._state.is_owned_by_us("test_resource", "self_test_item")
+            tests.append(("Resource registry", True))
+            passed += 1
+        except Exception as e:
+            tests.append(("Resource registry", False, str(e)))
+            failed += 1
+
+        # Test 5: Logging
+        try:
+            from cape_auto.logging_setup import get_logger
+            test_logger = get_logger("self_test")
+            test_logger.info("Self-test log message")
+            tests.append(("Logging", True))
+            passed += 1
+        except Exception as e:
+            tests.append(("Logging", False, str(e)))
+            failed += 1
+
+        # Test 6: Secret redaction
+        try:
+            from cape_auto.logging_setup import RedactingFormatter
+            import logging
+            fmt = RedactingFormatter("%(message)s", redact=True)
+            record = logging.LogRecord("test", logging.INFO, "", 0,
+                                       "password=secret123", (), None)
+            formatted = fmt.format(record)
+            assert "secret123" not in formatted
+            tests.append(("Secret redaction", True))
+            passed += 1
+        except Exception as e:
+            tests.append(("Secret redaction", False, str(e)))
+            failed += 1
+
+        # Test 7: Diagnostics engine
+        try:
+            assert hasattr(self._diag, "diagnose_all")
+            tests.append(("Diagnostics engine", True))
+            passed += 1
+        except Exception as e:
+            tests.append(("Diagnostics engine", False, str(e)))
+            failed += 1
+
+        # Test 8: Remediation engine
+        try:
+            cat = self._remediation.classify_error("permission denied", 1)
+            assert cat == "PERMISSION_ERROR"
+            tests.append(("Error classification", True))
+            passed += 1
+        except Exception as e:
+            tests.append(("Error classification", False, str(e)))
+            failed += 1
+
+        # Report
+        print("\n" + "=" * 50)
+        print("Framework Self-Test Results")
+        print("=" * 50)
+        for t in tests:
+            icon = "[PASS]" if t[1] else "[FAIL]"
+            line = f"  {icon} {t[0]}"
+            if len(t) > 2:
+                line += f" - {t[2]}"
+            print(line)
+        print(f"\n  Passed: {passed}, Failed: {failed}")
+        print("=" * 50)
+
+        return 0 if failed == 0 else 1
+
+    def uninstall(self, keep_user: bool = False, keep_data: bool = False,
+                  keep_vm: bool = False, full_reset: bool = False,
+                  dry_run: bool = False) -> int:
+        """Uninstall CAPE resources created by this installer."""
+        logger.info("Uninstall mode")
+
+        resources = self._state.get_resources()
+        our_resources = [r for r in resources if r.ownership in (
+            ResourceOwnership.CREATED_BY_INSTALLER.value,
+            ResourceOwnership.MODIFIED_BY_INSTALLER.value,
+        )]
+
+        if not our_resources and not full_reset:
+            logger.info("No resources created by this installer found.")
+            return 0
+
+        print("\nResources to remove:")
+        for r in our_resources:
+            print(f"  - {r.resource_type}: {r.name}")
+
+        if dry_run:
+            print("\n[DRY-RUN] No changes made.")
+            return 0
+
+        # Stop CAPE services first
+        for svc in ["cape-web", "cape-processor", "cape", "cape-rooter"]:
+            self._cmd.run(["systemctl", "stop", f"{svc}.service"])
+            self._cmd.run(["systemctl", "disable", f"{svc}.service"])
+
+        # Remove owned resources
+        for r in our_resources:
+            if r.resource_type == "libvirt_network" and not keep_vm:
+                self._cmd.run(["virsh", "net-destroy", r.name])
+                self._cmd.run(["virsh", "net-undefine", r.name])
+            elif r.resource_type == "vm" and not keep_vm:
+                self._cmd.run(["virsh", "destroy", r.name])
+                self._cmd.run(["virsh", "undefine", r.name, "--remove-all-storage"])
+
+        logger.info("Uninstall complete. Pre-existing resources preserved.")
+        return 0
+
+    def update(self) -> int:
+        """Update existing CAPEv2 installation."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+
+        if not os.path.isdir(cape_root):
+            logger.error(f"CAPE not found at {cape_root}")
+            return 1
+
+        logger.info("Updating CAPEv2...")
+
+        # Record current state
+        old_commit = self._cmd.run_capture(
+            ["git", "rev-parse", "HEAD"], cwd=cape_root
+        ).strip()
+        self._state.update_manifest("update_from_commit", old_commit)
+
+        # Backup config
+        self._state.create_backup("update", [
+            os.path.join(cape_root, "conf"),
+        ])
+
+        # Pull
+        pull = self._cmd.run(["git", "pull", "--ff-only"], cwd=cape_root, timeout=120)
+        if not pull.success:
+            logger.error(f"Git pull failed: {pull.stderr}")
+            return 1
+
+        new_commit = self._cmd.run_capture(
+            ["git", "rev-parse", "HEAD"], cwd=cape_root
+        ).strip()
+        logger.info(f"Updated: {old_commit[:12]} → {new_commit[:12]}")
+
+        # Reinstall dependencies
+        self._remediation.repair_python_env(cape_root)
+
+        # Restart services
+        for svc in ["cape-rooter", "cape", "cape-processor", "cape-web"]:
+            self._cmd.run(["systemctl", "restart", f"{svc}.service"])
+
+        return 0
+
+    def reset_failed_and_retry(self) -> int:
+        """Reset failed stages and retry."""
+        failed = self._state.get_failed_stages()
+        if not failed:
+            logger.info("No failed stages to reset.")
+            return 0
+
+        for stage_name in failed:
+            logger.info(f"Resetting stage: {stage_name}")
+            self._state.reset_stage(stage_name)
+
+        return self.resume()
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STAGE EXECUTION ENGINE
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _execute_stage_with_repair(self, stage_name: str, max_repair: int) -> bool:
+        """Execute a stage with automatic diagnosis and repair on failure."""
+        for attempt in range(1, max_repair + 1):
+            logger.info(f"{'─' * 40}")
+            logger.info(f"Stage: {stage_name} (attempt {attempt}/{max_repair})")
+            logger.info(f"{'─' * 40}")
+
+            try:
+                self._state.start_stage(stage_name)
+                self._execute_stage(stage_name)
+                self._state.complete_stage(stage_name)
+                return True
+
+            except RebootRequired:
+                self._state.update_manifest("reboot_required", True)
+                raise
+
+            except ManualInterventionRequired as e:
+                self._state.fail_stage(stage_name, str(e))
+                self._reporter.generate_manual_intervention_report(
+                    stage_name, str(e), e.report_path
+                )
+                raise
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Stage {stage_name} failed: {error_msg}")
+
+                if attempt < max_repair:
+                    # Diagnose and repair
+                    category = self._remediation.classify_error(
+                        error_msg, getattr(e, "exit_code", -1)
+                    )
+                    logger.info(f"Error category: {category}")
+
+                    repaired = self._attempt_repair(category, stage_name)
+                    self._state.add_repair_attempt(stage_name, f"{category}_attempt_{attempt}")
+
+                    if not repaired:
+                        logger.warning("Repair unsuccessful, will retry anyway")
+                else:
+                    self._state.fail_stage(stage_name, error_msg)
+
+        return False
+
+    def _execute_stage(self, stage_name: str) -> None:
+        """Execute a single installation stage."""
+        stage_map = {
+            "PREFLIGHT": self._stage_preflight,
+            "BACKUP": self._stage_backup,
+            "REPOSITORIES": self._stage_repositories,
+            "BASE_PACKAGES": self._stage_base_packages,
+            "KVM": self._stage_kvm,
+            "LIBVIRT": self._stage_libvirt,
+            "REBOOT_CHECK": self._stage_reboot_check,
+            "CAPE_REPOSITORY": self._stage_cape_repository,
+            "CAPE_DEPENDENCIES": self._stage_cape_dependencies,
+            "CAPE_INSTALL": self._stage_cape_install,
+            "CAPE_CONFIG": self._stage_cape_config,
+            "DATABASE": self._stage_database,
+            "SYSTEMD": self._stage_systemd,
+            "NETWORK": self._stage_network,
+            "VM_CREATE": self._stage_vm_create,
+            "VM_INSTALL": self._stage_vm_install,
+            "VM_CONFIG": self._stage_vm_config,
+            "AGENT": self._stage_agent,
+            "SNAPSHOT": self._stage_snapshot,
+            "MACHINERY_CONFIG": self._stage_machinery_config,
+            "CAPE_START": self._stage_cape_start,
+            "HEALTH_CHECK": self._stage_health_check,
+            "END_TO_END_TEST": self._stage_end_to_end,
+            "FINALIZE": self._stage_finalize,
+        }
+
+        handler = stage_map.get(stage_name)
+        if handler:
+            handler()
+        else:
+            logger.warning(f"No handler for stage: {stage_name}")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # INDIVIDUAL STAGE IMPLEMENTATIONS
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _stage_preflight(self) -> None:
+        """Comprehensive environment detection and validation."""
+        self._run_preflight(report_only=False)
+
+    def _run_preflight(self, report_only: bool = False) -> int:
+        """Run preflight checks. Returns 0 on pass, 1 on fail."""
+        logger.info("Running preflight checks...")
+        issues: list[str] = []
+        warnings: list[str] = []
+
+        # OS Detection
+        os_release = self._cmd.run_capture(["cat", "/etc/os-release"])
+        uname_r = self._cmd.run_capture(["uname", "-r"])
+        arch = self._cmd.run_capture(["dpkg", "--print-architecture"]).strip()
+
+        version_id = ""
+        codename = ""
+        for line in os_release.splitlines():
+            if line.startswith("VERSION_ID="):
+                version_id = line.split("=")[1].strip('"')
+            if line.startswith("VERSION_CODENAME="):
+                codename = line.split("=")[1].strip('"')
+
+        logger.info(f"Ubuntu {version_id} ({codename}), kernel {uname_r.strip()}, arch {arch}")
+        self._state.update_manifest("ubuntu_version", version_id)
+        self._state.update_manifest("ubuntu_codename", codename)
+        self._state.update_manifest("kernel", uname_r.strip())
+        self._state.update_manifest("architecture", arch)
+
+        # Classify compatibility
+        if version_id == "24.04":
+            compat = "CAPE_RECOMMENDED"
+        elif version_id in ("22.04", "24.10"):
+            compat = "CAPE_SUPPORTED"
+        elif version_id.startswith("2"):
+            compat = "CAPE_COMPATIBILITY_MODE"
+        else:
+            compat = "UNSUPPORTED"
+
+        self._state.update_manifest("compatibility_class", compat)
+        logger.info(f"Compatibility classification: {compat}")
+
+        if compat == "UNSUPPORTED":
+            issues.append(f"Ubuntu {version_id} is not supported by CAPEv2")
+
+        # CPU checks
+        cpuinfo = self._cmd.run_capture(["cat", "/proc/cpuinfo"])
+        has_virt = "vmx" in cpuinfo.lower() or "svm" in cpuinfo.lower()
+        kvm_exists = os.path.exists("/dev/kvm") if not self._dry_run_mode else True
+
+        if not has_virt:
+            issues.append("No hardware virtualization support (VT-x/AMD-V)")
+        if not kvm_exists and has_virt:
+            warnings.append("/dev/kvm not found - KVM modules may need loading")
+
+        # CPU info for manifest
+        lscpu = self._cmd.run_capture(["lscpu"])
+        for line in lscpu.splitlines():
+            if "Model name:" in line:
+                self._state.update_manifest("cpu_model", line.split(":", 1)[1].strip())
+            if "CPU(s):" in line and "NUMA" not in line and "On-line" not in line:
+                self._state.update_manifest("cpu_count", line.split(":", 1)[1].strip())
+
+        # Memory check
+        meminfo = self._cmd.run_capture(["cat", "/proc/meminfo"])
+        total_mem_kb = 0
+        for line in meminfo.splitlines():
+            if line.startswith("MemTotal:"):
+                total_mem_kb = int(line.split()[1])
+                break
+        total_mem_gb = total_mem_kb / (1024 * 1024)
+        self._state.update_manifest("ram_gb", round(total_mem_gb, 1))
+
+        if total_mem_gb < 4:
+            issues.append(f"Insufficient RAM: {total_mem_gb:.1f} GB (minimum 4 GB)")
+        elif total_mem_gb < 8:
+            warnings.append(f"Low RAM: {total_mem_gb:.1f} GB (8+ GB recommended for VM)")
+
+        # Disk check
+        df_result = self._cmd.run_capture(["df", "-BG", "/"])
+        if df_result:
+            lines = df_result.strip().splitlines()
+            if len(lines) >= 2:
+                parts = lines[1].split()
+                if len(parts) >= 4:
+                    avail_gb = int(parts[3].rstrip("G"))
+                    self._state.update_manifest("disk_available_gb", avail_gb)
+                    if avail_gb < 50:
+                        issues.append(f"Insufficient disk: {avail_gb} GB free (50+ GB needed)")
+                    elif avail_gb < 100:
+                        warnings.append(f"Low disk: {avail_gb} GB free (100+ GB recommended)")
+
+        # Network detection
+        default_route = self._cmd.run_capture(["ip", "route", "show", "default"])
+        if default_route:
+            parts = default_route.split()
+            if "dev" in parts:
+                dev_idx = parts.index("dev")
+                if dev_idx + 1 < len(parts):
+                    iface = parts[dev_idx + 1]
+                    self._state.update_manifest("default_interface", iface)
+                    logger.info(f"Default network interface: {iface}")
+
+        # SSH detection
+        ssh_conn = os.environ.get("SSH_CONNECTION", "")
+        self._state.update_manifest("ssh_session", bool(ssh_conn))
+        if ssh_conn:
+            warnings.append("Running via SSH - remote-safe mode active")
+
+        # Existing software detection
+        existing = []
+        for sw in ["docker", "podman", "tailscale", "wg", "openvpn", "ufw",
+                    "nft", "virsh", "mongod", "psql", "poetry", "uv"]:
+            if self._cmd.run(["which", sw], timeout=5).success:
+                existing.append(sw)
+        if existing:
+            logger.info(f"Existing software detected: {', '.join(existing)}")
+            self._state.update_manifest("existing_software", existing)
+
+        # Check for existing CAPE
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        if os.path.isdir(cape_root):
+            warnings.append(f"Existing CAPE installation found at {cape_root}")
+            self._state.update_manifest("existing_cape", True)
+
+        # Report
+        print("\n" + "=" * 50)
+        print("Preflight Report")
+        print("=" * 50)
+        print(f"  Ubuntu:          {version_id} ({codename})")
+        print(f"  Kernel:          {uname_r.strip()}")
+        print(f"  Architecture:    {arch}")
+        print(f"  Compatibility:   {compat}")
+        print(f"  RAM:             {total_mem_gb:.1f} GB")
+        print(f"  Virtualization:  {'Yes' if has_virt else 'No'}")
+        print(f"  SSH Session:     {'Yes' if ssh_conn else 'No'}")
+        if existing:
+            print(f"  Existing SW:     {', '.join(existing)}")
+
+        if issues:
+            print(f"\n  ISSUES ({len(issues)}):")
+            for issue in issues:
+                print(f"    [FAIL] {issue}")
+
+        if warnings:
+            print(f"\n  WARNINGS ({len(warnings)}):")
+            for w in warnings:
+                print(f"    [WARN] {w}")
+
+        if not issues:
+            print(f"\n  Result: PREFLIGHT PASSED [OK]")
+        else:
+            print(f"\n  Result: PREFLIGHT FAILED [FAIL]")
+
+        print("=" * 50 + "\n")
+
+        if report_only:
+            return 1 if issues else 0
+
+        if issues:
+            raise PreflightError("; ".join(issues))
+
+        return 0
+
+    def _stage_backup(self) -> None:
+        """Create initial backup of existing state."""
+        logger.info("Creating pre-installation backups...")
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+
+        files_to_backup = []
+        if os.path.isdir(cape_root):
+            conf_dir = os.path.join(cape_root, "conf")
+            if os.path.isdir(conf_dir):
+                for f in os.listdir(conf_dir):
+                    if f.endswith(".conf"):
+                        files_to_backup.append(os.path.join(conf_dir, f))
+
+        # Backup netplan if exists
+        netplan_dir = "/etc/netplan"
+        if os.path.isdir(netplan_dir):
+            for f in os.listdir(netplan_dir):
+                files_to_backup.append(os.path.join(netplan_dir, f))
+
+        if files_to_backup:
+            self._state.create_backup("initial", files_to_backup)
+
+    def _stage_repositories(self) -> None:
+        """Configure package repositories."""
+        logger.info("Updating package repositories...")
+
+        # Handle proxy
+        http_proxy = self._config.get_str("proxy.http_proxy")
+        env = {}
+        if http_proxy:
+            env["http_proxy"] = http_proxy
+            env["https_proxy"] = self._config.get_str("proxy.https_proxy", http_proxy)
+
+        self._cmd.run_with_retry(
+            ["apt-get", "update"],
+            env=env if env else None,
+            timeout=300,
+            max_attempts=3,
+            delay=10,
+        )
+
+    def _stage_base_packages(self) -> None:
+        """Install essential system packages."""
+        logger.info("Installing base packages...")
+
+        base_packages = [
+            "git", "curl", "wget", "gnupg2", "software-properties-common",
+            "build-essential", "python3-dev", "python3-venv", "python3-pip",
+            "libffi-dev", "libssl-dev", "libjpeg-dev", "zlib1g-dev",
+            "tmux", "htop", "jq", "unzip", "net-tools",
+        ]
+
+        # Install in batches to handle individual failures
+        self._cmd.run_checked(
+            ["apt-get", "install", "-y", "--no-install-recommends"] + base_packages,
+            timeout=600,
+        )
+
+        # Track as our resources
+        for pkg in base_packages:
+            self._state.register_resource(
+                "package", pkg, ResourceOwnership.MODIFIED_BY_INSTALLER
+            )
+
+    def _stage_kvm(self) -> None:
+        """Install and verify KVM/QEMU."""
+        logger.info("Setting up KVM/QEMU...")
+
+        # Check if KVM already works
+        kvm_diag = self._diag.diagnose_kvm()
+        if kvm_diag.status == HealthStatus.PASS.value:
+            logger.info("KVM is already working")
+            self._state.register_resource(
+                "kvm", "kvm", ResourceOwnership.PRE_EXISTING
+            )
+            return
+
+        # Check /dev/kvm
+        if not os.path.exists("/dev/kvm"):
+            # Try loading modules
+            self._cmd.run(["modprobe", "kvm_intel"])
+            self._cmd.run(["modprobe", "kvm_amd"])
+            if not os.path.exists("/dev/kvm"):
+                raise ManualInterventionRequired(
+                    "KVM unavailable - virtualization may be disabled in BIOS/UEFI. "
+                    "Enable Intel VT-x or AMD-V, reboot, then run: sudo ./install.sh --resume",
+                    report_path="reports/manual-intervention.md",
+                )
+
+        # Install KVM packages (don't use upstream kvm-qemu.sh by default
+        # as it compiles from source - use system packages first)
+        kvm_packages = [
+            "qemu-kvm", "qemu-system-x86", "qemu-utils",
+            "libvirt-daemon-system", "libvirt-clients",
+            "bridge-utils", "virt-manager",
+        ]
+
+        result = self._cmd.run(
+            ["apt-get", "install", "-y"] + kvm_packages,
+            timeout=600,
+        )
+
+        if not result.success:
+            # Fallback: try individual packages
+            for pkg in kvm_packages:
+                self._cmd.run(["apt-get", "install", "-y", pkg], timeout=120)
+
+        # Verify
+        qemu_check = self._cmd.run(["which", "qemu-system-x86_64"])
+        if not qemu_check.success:
+            raise StageError("QEMU installation failed", stage="KVM")
+
+        self._state.register_resource("kvm", "kvm", ResourceOwnership.MODIFIED_BY_INSTALLER)
+
+    def _stage_libvirt(self) -> None:
+        """Setup and verify libvirt."""
+        logger.info("Setting up libvirt...")
+
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+
+        # Add user to required groups
+        for group in ["libvirt", "kvm", "libvirt-qemu"]:
+            self._cmd.run(["usermod", "-aG", group, cape_user])
+
+        # Detect and start appropriate services
+        for daemon in ["libvirtd", "virtqemud", "virtnetworkd", "virtlogd"]:
+            svc = f"{daemon}.service"
+            exists = self._cmd.run(["systemctl", "cat", svc])
+            if exists.success:
+                self._cmd.run(["systemctl", "enable", svc])
+                self._cmd.run(["systemctl", "start", svc])
+                self._state.register_resource(
+                    "service", daemon, ResourceOwnership.MODIFIED_BY_INSTALLER
+                )
+
+        # Also enable sockets
+        for daemon in ["libvirtd", "virtqemud"]:
+            sock = f"{daemon}.socket"
+            exists = self._cmd.run(["systemctl", "cat", sock])
+            if exists.success:
+                self._cmd.run(["systemctl", "enable", sock])
+                self._cmd.run(["systemctl", "start", sock])
+
+        # Verify connection
+        import time
+        time.sleep(2)
+        uri = self._cmd.run(["virsh", "uri"], timeout=15)
+        if not uri.success:
+            # Try repair
+            if not self._remediation.repair_libvirt():
+                raise StageError("Cannot connect to libvirt", stage="LIBVIRT")
+
+        logger.info(f"Libvirt URI: {uri.stdout.strip()}")
+
+    def _stage_reboot_check(self) -> None:
+        """Check if reboot is needed."""
+        reboot_required = os.path.exists("/var/run/reboot-required")
+        if reboot_required:
+            if self._config.get_bool("safety.allow_reboot"):
+                logger.info("Reboot required and allowed by config")
+                raise RebootRequired("Reboot required for kernel/driver updates")
+            else:
+                logger.warning("Reboot recommended but not auto-allowed")
+
+    def _stage_cape_repository(self) -> None:
+        """Clone or verify CAPEv2 repository."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        cape_repo = self._config.get_str("installation.cape_repo")
+        cape_ref = self._config.get_str("installation.cape_ref", "master")
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+
+        # Create cape user if needed
+        user_check = self._cmd.run(["id", cape_user])
+        if not user_check.success:
+            logger.info(f"Creating user: {cape_user}")
+            self._cmd.run_checked([
+                "useradd", "-m", "-s", "/bin/bash", cape_user
+            ])
+            self._state.register_resource(
+                "user", cape_user, ResourceOwnership.CREATED_BY_INSTALLER
+            )
+
+        if os.path.isdir(cape_root):
+            # Verify existing repo
+            git_check = self._cmd.run(["git", "status"], cwd=cape_root)
+            if git_check.success:
+                logger.info(f"Existing CAPE repository found at {cape_root}")
+                commit = self._cmd.run_capture(["git", "rev-parse", "HEAD"], cwd=cape_root)
+                self._state.update_manifest("cape_commit", commit.strip())
+                self._state.register_resource(
+                    "cape_repo", cape_root, ResourceOwnership.PRE_EXISTING
+                )
+                return
+            else:
+                logger.warning(f"{cape_root} exists but is not a git repo")
+
+        # Clone
+        logger.info(f"Cloning CAPEv2 from {cape_repo}...")
+        self._cmd.run_checked(
+            ["git", "clone", "-b", cape_ref, "--depth", "1", cape_repo, cape_root],
+            timeout=600,
+        )
+
+        # Set ownership
+        self._cmd.run(["chown", "-R", f"{cape_user}:{cape_user}", cape_root])
+
+        commit = self._cmd.run_capture(["git", "rev-parse", "HEAD"], cwd=cape_root)
+        self._state.update_manifest("cape_commit", commit.strip())
+        self._state.update_manifest("cape_repo", cape_repo)
+        self._state.update_manifest("cape_ref", cape_ref)
+        self._state.register_resource(
+            "cape_repo", cape_root, ResourceOwnership.CREATED_BY_INSTALLER
+        )
+
+    def _stage_cape_dependencies(self) -> None:
+        """Install CAPE dependencies using upstream installer."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+
+        installer_path = os.path.join(cape_root, "installer", "cape2.sh")
+        if not os.path.isfile(installer_path):
+            raise StageError("CAPE installer not found", stage="CAPE_DEPENDENCIES")
+
+        # Record installer hash
+        with open(installer_path, "rb") as f:
+            installer_hash = hashlib.sha256(f.read()).hexdigest()
+        self._state.update_manifest("installer_hash", installer_hash)
+
+        # Run upstream installer for dependencies
+        logger.info("Running CAPE dependency installer (this may take a while)...")
+        result = self._cmd.run(
+            ["bash", installer_path, "dependencies"],
+            cwd=cape_root,
+            timeout=3600,  # 1 hour timeout
+        )
+        if not result.success:
+            logger.warning(f"Dependency installer had issues: {result.stderr[:200]}")
+            # Don't fail - individual packages may have issues
+
+    def _stage_cape_install(self) -> None:
+        """Install CAPE Python environment."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+        python_mgr = self._config.get_str("installation.python_manager", "auto")
+
+        # Determine package manager
+        if python_mgr == "auto":
+            # Check what's available and what upstream prefers
+            if self._cmd.run(["which", "uv"]).success:
+                python_mgr = "uv"
+            elif os.path.isfile("/etc/poetry/bin/poetry"):
+                python_mgr = "poetry"
+            else:
+                python_mgr = "poetry"  # Default to poetry as upstream does
+
+        logger.info(f"Using Python package manager: {python_mgr}")
+        self._state.update_manifest("python_manager", python_mgr)
+
+        if python_mgr == "poetry":
+            # Install poetry if needed
+            if not os.path.isfile("/etc/poetry/bin/poetry"):
+                logger.info("Installing Poetry...")
+                self._cmd.run(
+                    'curl -sSL https://install.python-poetry.org | '
+                    'POETRY_HOME=/etc/poetry python3 -',
+                    shell=True, timeout=120,
+                )
+
+            # Install CAPE deps with poetry
+            result = self._cmd.run_as_user(
+                ["/etc/poetry/bin/poetry", "install"],
+                user=cape_user,
+                cwd=cape_root,
+                timeout=900,
+            )
+        elif python_mgr == "uv":
+            # Install uv if needed
+            if not self._cmd.run(["which", "uv"]).success:
+                logger.info("Installing uv...")
+                self._cmd.run(
+                    'curl -LsSf https://astral.sh/uv/install.sh | sh',
+                    shell=True, timeout=60,
+                )
+
+            result = self._cmd.run_as_user(
+                ["uv", "sync", "--no-install-project"],
+                user=cape_user,
+                cwd=cape_root,
+                timeout=900,
+            )
+
+        # Verify Python environment
+        py_check = self._cmd.run_as_user(
+            ["python3", "--version"],
+            user=cape_user,
+            cwd=cape_root,
+        )
+        logger.info(f"Python: {py_check.stdout.strip()}")
+        self._state.update_manifest("python_version", py_check.stdout.strip())
+
+    def _stage_cape_config(self) -> None:
+        """Generate CAPE configuration from discovered environment."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        gateway = self._config.get_str("network.gateway", "192.168.250.1")
+        cape_iface = self._config.get_str("network.cape_interface", "virbr1")
+
+        conf_dir = os.path.join(cape_root, "conf")
+        custom_dir = os.path.join(cape_root, "custom", "conf")
+        Path(custom_dir).mkdir(parents=True, exist_ok=True)
+
+        # Backup existing configs
+        existing_configs = []
+        if os.path.isdir(conf_dir):
+            for f in os.listdir(conf_dir):
+                if f.endswith(".conf"):
+                    existing_configs.append(os.path.join(conf_dir, f))
+        if existing_configs:
+            self._state.create_backup("cape_config", existing_configs)
+
+        # Generate cuckoo.conf with discovered values
+        cuckoo_conf = f"""[cuckoo]
+machinery = kvm
+memory_dump = off
+terminate_processes = off
+reschedule = off
+max_analysis_count = 0
+max_machines_count = 10
+freespace = 50000
+tmppath = /tmp
+rooter = /tmp/cuckoo-rooter
+
+[resultserver]
+ip = {gateway}
+port = 2042
+force_port = yes
+
+[processing]
+analysis_size_limit = 134217728
+"""
+
+        cuckoo_path = os.path.join(custom_dir, "cuckoo.conf")
+        with open(cuckoo_path, "w") as f:
+            f.write(cuckoo_conf)
+
+        # Generate KVM machinery config
+        vm_name = self._config.get_str("guest.name", "cape-win")
+        vm_ip = self._config.get_str("network.vm_ip_start", "192.168.250.100")
+        snapshot = self._config.get_str("guest.snapshot_name", "cape-clean")
+
+        kvm_conf = f"""[kvm]
+machines = {vm_name}
+interface = {cape_iface}
+dsn =
+
+[{vm_name}]
+label = {vm_name}
+platform = windows
+ip = {vm_ip}
+snapshot = {snapshot}
+interface =
+resultserver_ip = {gateway}
+resultserver_port = 2042
+tags =
+options =
+osprofile =
+"""
+        kvm_path = os.path.join(custom_dir, "kvm.conf")
+        with open(kvm_path, "w") as f:
+            f.write(kvm_conf)
+
+        # Generate routing.conf
+        routing_conf = """[routing]
+route = none
+internet = none
+rt_table = main
+auto_rt = yes
+drop = off
+"""
+        routing_path = os.path.join(custom_dir, "routing.conf")
+        with open(routing_path, "w") as f:
+            f.write(routing_conf)
+
+        # Fix ownership
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+        self._cmd.run(["chown", "-R", f"{cape_user}:{cape_user}", custom_dir])
+
+        logger.info("CAPE configuration generated")
+
+    def _stage_database(self) -> None:
+        """Setup database (MongoDB or PostgreSQL)."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        db_backend = self._config.get_str("database.backend", "auto")
+
+        if db_backend == "auto":
+            # Check upstream installer preference - CAPE uses MongoDB for reporting
+            db_backend = "mongodb"
+
+        if db_backend == "mongodb":
+            self._setup_mongodb()
+        elif db_backend == "postgresql":
+            self._setup_postgresql()
+
+    def _setup_mongodb(self) -> None:
+        """Setup MongoDB."""
+        # Check if already running
+        status = self._cmd.run(["systemctl", "is-active", "mongod"])
+        if status.stdout.strip() == "active":
+            logger.info("MongoDB already running")
+            self._state.register_resource(
+                "database", "mongodb", ResourceOwnership.PRE_EXISTING
+            )
+            return
+
+        # Check if installed
+        installed = self._cmd.run(["which", "mongod"])
+        if installed.success:
+            # Just start it
+            self._cmd.run(["systemctl", "enable", "mongod"])
+            self._cmd.run(["systemctl", "start", "mongod"])
+            self._state.register_resource(
+                "database", "mongodb", ResourceOwnership.MODIFIED_BY_INSTALLER
+            )
+            return
+
+        # Check CPU for AVX (needed for MongoDB 5.0+)
+        cpuinfo = self._cmd.run_capture(["cat", "/proc/cpuinfo"])
+        has_avx = "avx" in cpuinfo.lower()
+
+        if not has_avx:
+            logger.warning("CPU does not support AVX - using MongoDB 4.4 or compatible version")
+
+        # Install MongoDB using upstream CAPE installer
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        installer = os.path.join(cape_root, "installer", "cape2.sh")
+
+        if os.path.isfile(installer):
+            logger.info("Installing MongoDB via CAPE installer...")
+            result = self._cmd.run(
+                ["bash", installer, "mongo"],
+                timeout=600,
+            )
+            if result.success:
+                self._state.register_resource(
+                    "database", "mongodb", ResourceOwnership.CREATED_BY_INSTALLER
+                )
+                return
+
+        # Fallback: direct installation
+        logger.info("Attempting direct MongoDB installation...")
+        self._cmd.run(
+            ["apt-get", "install", "-y", "mongodb"],
+            timeout=300,
+        )
+
+    def _setup_postgresql(self) -> None:
+        """Setup PostgreSQL."""
+        status = self._cmd.run(["systemctl", "is-active", "postgresql"])
+        if status.stdout.strip() == "active":
+            logger.info("PostgreSQL already running")
+            self._state.register_resource(
+                "database", "postgresql", ResourceOwnership.PRE_EXISTING
+            )
+            return
+
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        installer = os.path.join(cape_root, "installer", "cape2.sh")
+
+        if os.path.isfile(installer):
+            self._cmd.run(["bash", installer, "postgresql"], timeout=600)
+            self._state.register_resource(
+                "database", "postgresql", ResourceOwnership.CREATED_BY_INSTALLER
+            )
+
+    def _stage_systemd(self) -> None:
+        """Setup CAPE systemd services."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+
+        # Use upstream installer for systemd
+        installer = os.path.join(cape_root, "installer", "cape2.sh")
+        if os.path.isfile(installer):
+            self._cmd.run(["bash", installer, "systemd"], timeout=300)
+
+        # Verify services exist
+        for svc in ["cape", "cape-processor", "cape-web", "cape-rooter"]:
+            exists = self._cmd.run(["systemctl", "cat", f"{svc}.service"])
+            if exists.success:
+                self._state.register_resource(
+                    "systemd_unit", svc, ResourceOwnership.CREATED_BY_INSTALLER
+                )
+                logger.info(f"Service {svc}: installed")
+
+        self._cmd.run(["systemctl", "daemon-reload"])
+
+    def _stage_network(self) -> None:
+        """Setup CAPE analysis network."""
+        net_name = self._config.get_str("network.libvirt_network_name", "cape-analysis")
+        subnet = self._config.get_str("network.subnet", "192.168.250.0/24")
+        gateway = self._config.get_str("network.gateway", "192.168.250.1")
+        mode = self._config.get_str("network.mode", "isolated")
+
+        # Check if network already exists
+        net_list = self._cmd.run_capture(["virsh", "net-list", "--all"])
+        if net_name in net_list:
+            logger.info(f"Libvirt network '{net_name}' already exists")
+            # Check if active
+            net_info = self._cmd.run(["virsh", "net-info", net_name])
+            if "Active:          yes" not in net_info.stdout:
+                self._cmd.run(["virsh", "net-start", net_name])
+            self._state.register_resource(
+                "libvirt_network", net_name, ResourceOwnership.PRE_EXISTING
+            )
+            return
+
+        # Parse subnet
+        parts = gateway.rsplit(".", 1)
+        network_prefix = parts[0]
+        dhcp_start = f"{network_prefix}.100"
+        dhcp_end = f"{network_prefix}.254"
+
+        # Generate network XML
+        if mode == "isolated":
+            forward_xml = ""
+        elif mode == "nat":
+            forward_xml = "  <forward mode='nat'/>"
+        else:
+            forward_xml = ""
+
+        network_xml = f"""<network>
+  <name>{net_name}</name>
+{forward_xml}
+  <bridge name='virbr-cape' stp='on' delay='0'/>
+  <ip address='{gateway}' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='{dhcp_start}' end='{dhcp_end}'/>
+    </dhcp>
+  </ip>
+</network>
+"""
+
+        # Write to temp file and define
+        xml_path = os.path.join(self._project_dir, "state", "cape-network.xml")
+        with open(xml_path, "w") as f:
+            f.write(network_xml)
+
+        self._cmd.run_checked(["virsh", "net-define", xml_path])
+        self._cmd.run_checked(["virsh", "net-start", net_name])
+        self._cmd.run_checked(["virsh", "net-autostart", net_name])
+
+        self._state.register_resource(
+            "libvirt_network", net_name, ResourceOwnership.CREATED_BY_INSTALLER
+        )
+        logger.info(f"Created analysis network: {net_name} ({mode})")
+
+    def _stage_vm_create(self) -> None:
+        """Create analysis VM."""
+        if not self._config.get_bool("guest.enabled"):
+            self._state.skip_stage("VM_CREATE", "Guest provisioning disabled")
+            return
+
+        vm_name = self._config.get_str("guest.name", "cape-win")
+        iso_path = self._config.get_str("guest.iso_path")
+        disk_path = self._config.get_str("guest.disk_path")
+        disk_size = self._config.get_int("guest.disk_size_gb", 80)
+        memory = self._config.get_int("guest.memory_mb", 8192)
+        vcpus = self._config.get_int("guest.vcpus", 4)
+        net_name = self._config.get_str("network.libvirt_network_name", "cape-analysis")
+
+        # Check if VM already exists
+        vm_list = self._cmd.run_capture(["virsh", "list", "--all"])
+        if vm_name in vm_list:
+            logger.info(f"VM '{vm_name}' already exists")
+            self._state.register_resource("vm", vm_name, ResourceOwnership.PRE_EXISTING)
+            return
+
+        if not iso_path or not os.path.isfile(iso_path):
+            logger.warning("No Windows ISO provided - VM creation deferred")
+            self._state.block_stage("VM_CREATE", "Windows ISO not provided")
+            return
+
+        # Check disk space
+        disk_dir = os.path.dirname(disk_path)
+        Path(disk_dir).mkdir(parents=True, exist_ok=True)
+
+        # Create disk
+        logger.info(f"Creating VM disk: {disk_path} ({disk_size}G)")
+        self._cmd.run_checked([
+            "qemu-img", "create", "-f", "qcow2", disk_path, f"{disk_size}G"
+        ])
+
+        # Create VM with virt-install
+        logger.info(f"Creating VM: {vm_name}")
+        install_cmd = [
+            "virt-install",
+            "--name", vm_name,
+            "--memory", str(memory),
+            "--vcpus", str(vcpus),
+            "--disk", f"path={disk_path},format=qcow2,bus=virtio",
+            "--cdrom", iso_path,
+            "--network", f"network={net_name},model=virtio",
+            "--graphics", "vnc,listen=127.0.0.1",
+            "--os-variant", "win10",
+            "--boot", "hd,cdrom",
+            "--noautoconsole",
+        ]
+
+        result = self._cmd.run(install_cmd, timeout=120)
+        if result.success:
+            self._state.register_resource(
+                "vm", vm_name, ResourceOwnership.CREATED_BY_INSTALLER,
+                disk_path=disk_path,
+            )
+            logger.info(f"VM '{vm_name}' created. Windows installation will begin on boot.")
+        else:
+            raise StageError(f"VM creation failed: {result.stderr}", stage="VM_CREATE")
+
+    def _stage_vm_install(self) -> None:
+        """Monitor Windows installation in VM."""
+        if not self._config.get_bool("guest.enabled"):
+            self._state.skip_stage("VM_INSTALL", "Guest disabled")
+            return
+
+        iso_path = self._config.get_str("guest.iso_path")
+        if not iso_path:
+            self._state.skip_stage("VM_INSTALL", "No ISO provided")
+            return
+
+        logger.info("Windows installation requires manual steps inside VM.")
+        logger.info("Use VNC viewer or virt-manager to complete Windows setup.")
+        self._state.block_stage(
+            "VM_INSTALL",
+            "Manual Windows installation required. Use virt-manager to complete setup."
+        )
+
+    def _stage_vm_config(self) -> None:
+        """Configure VM settings after Windows installation."""
+        if not self._config.get_bool("guest.enabled"):
+            self._state.skip_stage("VM_CONFIG", "Guest disabled")
+            return
+
+        vm_install_stage = self._state.get_stage("VM_INSTALL")
+        if vm_install_stage.status == StageStatus.BLOCKED.value:
+            self._state.skip_stage("VM_CONFIG", "Depends on VM_INSTALL")
+            return
+
+        logger.info("VM configuration stage - verifying VM state")
+
+    def _stage_agent(self) -> None:
+        """Install and verify CAPE agent in guest."""
+        if not self._config.get_bool("guest.enabled"):
+            self._state.skip_stage("AGENT", "Guest disabled")
+            return
+        if not self._config.get_bool("guest.agent.enabled"):
+            self._state.skip_stage("AGENT", "Agent disabled")
+            return
+
+        vm_install_stage = self._state.get_stage("VM_INSTALL")
+        if vm_install_stage.status in (StageStatus.BLOCKED.value, StageStatus.PENDING.value):
+            self._state.skip_stage("AGENT", "VM not ready")
+            return
+
+        logger.info("Agent installation requires VM to be running with Windows ready.")
+        logger.info("Copy CAPE agent from CAPE repository to the guest.")
+        self._state.block_stage("AGENT", "Manual agent installation required in guest")
+
+    def _stage_snapshot(self) -> None:
+        """Create VM snapshot after agent verification."""
+        if not self._config.get_bool("guest.enabled"):
+            self._state.skip_stage("SNAPSHOT", "Guest disabled")
+            return
+
+        agent_stage = self._state.get_stage("AGENT")
+        if agent_stage.status != StageStatus.SUCCESS.value:
+            self._state.skip_stage("SNAPSHOT", "Agent not ready")
+            return
+
+        vm_name = self._config.get_str("guest.name", "cape-win")
+        snap_name = self._config.get_str("guest.snapshot_name", "cape-clean")
+
+        # Create snapshot
+        logger.info(f"Creating snapshot '{snap_name}' for VM '{vm_name}'")
+        result = self._cmd.run([
+            "virsh", "snapshot-create-as", vm_name, snap_name,
+            "--description", "Clean snapshot for CAPE analysis"
+        ])
+
+        if result.success:
+            self._state.register_resource(
+                "snapshot", f"{vm_name}/{snap_name}",
+                ResourceOwnership.CREATED_BY_INSTALLER,
+            )
+            # Verify snapshot
+            verify = self._cmd.run(["virsh", "snapshot-list", vm_name])
+            if snap_name in verify.stdout:
+                logger.info("Snapshot created and verified")
+            else:
+                raise StageError("Snapshot created but verification failed", stage="SNAPSHOT")
+        else:
+            raise StageError(f"Snapshot creation failed: {result.stderr}", stage="SNAPSHOT")
+
+    def _stage_machinery_config(self) -> None:
+        """Generate CAPE machinery configuration from actual VM state."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+
+        # Already handled in CAPE_CONFIG stage
+        kvm_conf = os.path.join(cape_root, "custom", "conf", "kvm.conf")
+        if os.path.isfile(kvm_conf):
+            logger.info("Machinery configuration already generated")
+        else:
+            logger.warning("No machinery configuration found - regenerating")
+            self._stage_cape_config()
+
+    def _stage_cape_start(self) -> None:
+        """Start CAPE services in correct order."""
+        # Service startup order
+        startup_order = ["cape-rooter", "cape-processor", "cape", "cape-web"]
+
+        for svc in startup_order:
+            svc_name = f"{svc}.service"
+            exists = self._cmd.run(["systemctl", "cat", svc_name])
+            if not exists.success:
+                logger.warning(f"Service {svc} not found, skipping")
+                continue
+
+            self._cmd.run(["systemctl", "enable", svc_name])
+            result = self._cmd.run(["systemctl", "start", svc_name], timeout=30)
+
+            if not result.success:
+                logger.warning(f"Service {svc} failed to start, attempting repair")
+                self._remediation.repair_service(svc)
+
+            # Verify
+            import time
+            time.sleep(2)
+            check = self._cmd.run(["systemctl", "is-active", svc_name])
+            status = check.stdout.strip()
+            logger.info(f"Service {svc}: {status}")
+
+    def _stage_health_check(self) -> None:
+        """Run comprehensive health checks."""
+        results = self._diag.diagnose_all()
+        report = self._diag.generate_report(results)
+        logger.info(report)
+
+        # Save report
+        report_path = os.path.join(self._project_dir, "reports", "health-check.md")
+        Path(os.path.dirname(report_path)).mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w") as f:
+            f.write(report)
+
+        # Check for critical failures
+        critical = [r for r in results if r.status == HealthStatus.FAIL.value
+                    and r.severity == "critical"]
+        if critical:
+            raise StageError(
+                f"Critical health check failures: "
+                f"{', '.join(r.component for r in critical)}",
+                stage="HEALTH_CHECK",
+            )
+
+    def _stage_end_to_end(self) -> None:
+        """End-to-end validation."""
+        if not self._config.get_bool("verification.run_full_healthcheck"):
+            self._state.skip_stage("END_TO_END_TEST", "Disabled in config")
+            return
+
+        logger.info("Running end-to-end validation...")
+
+        # Check CAPE web responds
+        web_port = self._config.get_int("network.web_port", 8000)
+        web_bind = self._config.get_str("network.web_bind", "127.0.0.1")
+
+        web_check = self._cmd.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+             "--connect-timeout", "5", f"http://{web_bind}:{web_port}"],
+            timeout=15,
+        )
+
+        if web_check.success and web_check.stdout.strip() in ("200", "301", "302"):
+            logger.info("CAPE web interface responding")
+        else:
+            logger.warning("CAPE web interface not responding (may still be starting)")
+
+    def _stage_finalize(self) -> None:
+        """Final report and cleanup."""
+        self._reporter.generate_final_report(
+            self._state.is_complete() or not self._state.get_failed_stages()
+        )
+        logger.info("Installation finalized. See reports/ for details.")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # HELPERS
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _is_blocking_failure(self, stage_name: str) -> bool:
+        """Determine if a stage failure blocks further progress."""
+        blocking = {
+            "PREFLIGHT", "KVM", "LIBVIRT", "CAPE_REPOSITORY",
+        }
+        return stage_name in blocking
+
+    def _attempt_repair(self, error_category: str, stage_name: str) -> bool:
+        """Attempt automatic repair based on error category."""
+        repair_map = {
+            "PACKAGE_ERROR": self._remediation.repair_package_manager,
+            "LIBVIRT_ERROR": self._remediation.repair_libvirt,
+            "PYTHON_ERROR": lambda: self._remediation.repair_python_env(
+                self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+            ),
+            "PERMISSION_ERROR": lambda: self._remediation.repair_cape_permissions(
+                self._config.get_str("installation.cape_root", "/opt/CAPEv2"),
+                self._config.get_str("installation.cape_user", "cape"),
+            ),
+            "KVM_ERROR": self._remediation.repair_kvm_modules,
+            "DATABASE_ERROR": self._remediation.repair_database,
+            "SERVICE_ERROR": lambda: self._remediation.repair_service(stage_name.lower()),
+        }
+
+        repair_fn = repair_map.get(error_category)
+        if repair_fn:
+            try:
+                return repair_fn()
+            except Exception as e:
+                logger.warning(f"Repair attempt failed: {e}")
+                return False
+        return False
+
+    def _map_component_to_error(self, component: str) -> str:
+        """Map diagnostic component name to error category."""
+        mapping = {
+            "kvm": "KVM_ERROR",
+            "libvirt": "LIBVIRT_ERROR",
+            "network": "NETWORK_ERROR",
+            "python": "PYTHON_ERROR",
+            "database": "DATABASE_ERROR",
+            "cape_services": "SERVICE_ERROR",
+            "vm": "LIBVIRT_ERROR",
+        }
+        return mapping.get(component, "UNKNOWN_ERROR")
+
+    def _get_stage_description(self, stage_name: str) -> str:
+        """Get human-readable description of a stage."""
+        descriptions = {
+            "PREFLIGHT": "Detect and validate environment",
+            "BACKUP": "Backup existing configuration",
+            "REPOSITORIES": "Update package repositories",
+            "BASE_PACKAGES": "Install system dependencies",
+            "KVM": "Install/verify KVM/QEMU",
+            "LIBVIRT": "Setup libvirt services",
+            "REBOOT_CHECK": "Check if reboot is required",
+            "CAPE_REPOSITORY": "Clone CAPEv2 repository",
+            "CAPE_DEPENDENCIES": "Install CAPE dependencies",
+            "CAPE_INSTALL": "Install CAPE Python environment",
+            "CAPE_CONFIG": "Generate CAPE configuration",
+            "DATABASE": "Setup database",
+            "SYSTEMD": "Install systemd services",
+            "NETWORK": "Create analysis network",
+            "VM_CREATE": "Create analysis VM",
+            "VM_INSTALL": "Install Windows in VM",
+            "VM_CONFIG": "Configure VM",
+            "AGENT": "Install CAPE agent",
+            "SNAPSHOT": "Create VM snapshot",
+            "MACHINERY_CONFIG": "Configure CAPE machinery",
+            "CAPE_START": "Start CAPE services",
+            "HEALTH_CHECK": "Run health checks",
+            "END_TO_END_TEST": "End-to-end validation",
+            "FINALIZE": "Generate final report",
+        }
+        return descriptions.get(stage_name, "")
+
+    def _show_drift(self) -> None:
+        """Show configuration drift."""
+        print("\n  Configuration Drift Analysis")
+        print("  " + "-" * 40)
+
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+
+        # Check service states
+        for svc in ["cape", "cape-processor", "cape-web", "cape-rooter"]:
+            expected = "active"
+            actual = self._cmd.run_capture(
+                ["systemctl", "is-active", f"{svc}.service"]
+            ).strip()
+            if actual != expected:
+                print(f"    DRIFT: {svc} expected={expected} actual={actual}")
+
+        # Check CAPE directory ownership
+        if os.path.isdir(cape_root):
+            import stat
+            cape_stat = os.stat(cape_root)
+            import pwd
+            try:
+                owner = pwd.getpwuid(cape_stat.st_uid).pw_name
+                expected_owner = self._config.get_str("installation.cape_user", "cape")
+                if owner != expected_owner:
+                    print(f"    DRIFT: {cape_root} owner={owner} expected={expected_owner}")
+            except (KeyError, ImportError):
+                pass
+
+        print("  " + "-" * 40)

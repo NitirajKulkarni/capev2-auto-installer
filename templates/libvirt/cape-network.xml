@@ -1,0 +1,10 @@
+<network>
+  <name>{{NETWORK_NAME}}</name>
+{{FORWARD_XML}}
+  <bridge name='{{BRIDGE_NAME}}' stp='on' delay='0'/>
+  <ip address='{{GATEWAY_IP}}' netmask='{{NETMASK}}'>
+    <dhcp>
+      <range start='{{DHCP_START}}' end='{{DHCP_END}}'/>
+    </dhcp>
+  </ip>
+</network>

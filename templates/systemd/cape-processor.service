@@ -1,0 +1,17 @@
+[Unit]
+Description=CAPEv2 Results Processing Service
+After=network.target cape.service mongodb.service postgresql.service
+
+[Service]
+Type=simple
+User={{CAPE_USER}}
+Group={{CAPE_USER}}
+WorkingDirectory={{CAPE_ROOT}}
+Environment=PYTHONPATH={{CAPE_ROOT}}
+ExecStart={{PYTHON_PATH}} {{CAPE_ROOT}}/cuckoo.py -d -m 100
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

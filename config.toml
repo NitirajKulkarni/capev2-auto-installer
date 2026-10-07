@@ -1,0 +1,125 @@
+# CAPEv2 Automated Installer Configuration
+# ==========================================
+# Edit values below before running: sudo ./install.sh
+# Values marked NEEDS_INPUT require user configuration.
+# All other values have safe defaults.
+
+[installation]
+# Where to install CAPEv2
+cape_root = "/opt/CAPEv2"
+# System user for CAPE processes
+cape_user = "cape"
+# CAPEv2 repository
+cape_repo = "https://github.com/kevoreilly/CAPEv2.git"
+# Branch or ref to checkout
+cape_ref = "master"
+# Installation profile: "all", "base", "sandbox", "dependencies"
+install_profile = "all"
+# Python package manager: "auto", "poetry", "uv"
+python_manager = "auto"
+# Run without user prompts
+non_interactive = true
+# Automatically attempt repairs on failures
+auto_repair = true
+# Maximum repair attempts per stage
+max_repair_attempts = 3
+
+[safety]
+# Allow modification of host physical network
+allow_host_network_changes = false
+# Allow routing guest traffic to internet
+allow_internet_routing = false
+# Allow adding firewall rules for CAPE
+allow_firewall_changes = true
+# Allow automatic reboot when required
+allow_reboot = false
+# Preserve VMs not created by this installer
+preserve_existing_libvirt_vms = true
+# Preserve networks not created by this installer
+preserve_existing_networks = true
+# Allow destructive repair operations
+destructive_repair = false
+# Enable remote-safe mode automatically when SSH detected
+remote_safe_mode = "auto"
+
+[network]
+# Analysis network mode: "isolated", "nat", "internet"
+mode = "isolated"
+# Subnet for analysis network
+subnet = "192.168.250.0/24"
+# Host gateway IP on analysis network
+gateway = "192.168.250.1"
+# Starting IP for VM assignment
+vm_ip_start = "192.168.250.100"
+# DNS for guests: "none", "host", or specific IP
+dns = "none"
+# Libvirt network name for CAPE
+libvirt_network_name = "cape-analysis"
+# Interface name CAPE uses for sniffing
+cape_interface = "virbr1"
+# Web interface binding
+web_bind = "127.0.0.1"
+web_port = 8000
+
+[guest]
+# Enable Windows guest provisioning
+enabled = true
+# VM name in libvirt
+name = "cape-win"
+# Guest platform
+platform = "windows"
+# Path to Windows ISO (set this to your ISO)
+iso_path = ""
+# Path for virtual disk
+disk_path = "/var/lib/libvirt/images/cape-win.qcow2"
+# Disk size in GB
+disk_size_gb = 80
+# RAM in MB
+memory_mb = 8192
+# Virtual CPUs
+vcpus = 4
+# Snapshot name for clean state
+snapshot_name = "cape-clean"
+# Use UEFI boot (auto-detect if empty)
+uefi = ""
+
+[guest.agent]
+# Enable CAPE agent installation
+enabled = true
+# Agent listening port
+port = 8000
+# Agent type: "auto", "python", "go"
+type = "auto"
+
+[database]
+# Database backend: "auto", "mongodb", "postgresql"
+backend = "auto"
+# MongoDB settings
+mongodb_host = "127.0.0.1"
+mongodb_port = 27017
+# PostgreSQL settings
+postgresql_host = "127.0.0.1"
+postgresql_port = 5432
+postgresql_db = "cape"
+
+[verification]
+# Run full healthcheck after installation
+run_full_healthcheck = true
+# Submit a benign sample for end-to-end test
+submit_benign_sample = false
+# Path to benign test executable (optional)
+benign_sample_path = ""
+
+[logging]
+# Log level: "DEBUG", "INFO", "WARN", "ERROR"
+level = "INFO"
+# Enable secret redaction in logs
+redact_secrets = true
+# Maximum log file size in MB before rotation
+max_log_size_mb = 100
+
+[proxy]
+# HTTP proxy (auto-detected from environment if empty)
+http_proxy = ""
+https_proxy = ""
+no_proxy = ""
