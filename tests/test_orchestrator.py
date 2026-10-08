@@ -250,6 +250,29 @@ enabled = false
         self.assertTrue(os.path.isfile(dest_iso))
         self.assertFalse(os.path.isfile(part_iso))
 
+    def test_stage_vm_create_purges_unsafe_smm_domain(self):
+        from unittest.mock import MagicMock, patch
+
+        self.orchestrator._config.set("guest.enabled", True)
+        mock_cmd = MagicMock()
+        mock_cmd.run_capture.side_effect = lambda cmd: (
+            "cape-win\n" if "list" in cmd
+            else "<domain><features><smm state='on'/></features></domain>"
+        )
+        self.orchestrator._cmd = mock_cmd
+
+        # Stop execution at _download_windows_eval_iso by raising StopIteration
+        with patch.object(self.orchestrator, "_download_windows_eval_iso", side_effect=StopIteration):
+            try:
+                self.orchestrator._stage_vm_create()
+            except StopIteration:
+                pass
+
+        # Check that destroy and undefine were called to purge the unsafe domain
+        calls = [c[0][0] for c in mock_cmd.run.call_args_list]
+        self.assertIn(["virsh", "destroy", "cape-win"], calls)
+        self.assertIn(["virsh", "undefine", "cape-win", "--nvram", "--snapshots-metadata"], calls)
+
 
 if __name__ == "__main__":
     unittest.main()

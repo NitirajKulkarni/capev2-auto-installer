@@ -2029,9 +2029,19 @@ drop = off
         # Check if VM already exists
         vm_list = self._cmd.run_capture(["virsh", "list", "--all"])
         if vm_name in vm_list:
-            logger.info(f"VM '{vm_name}' already exists")
-            self._state.register_resource("vm", vm_name, ResourceOwnership.PRE_EXISTING)
-            return
+            dumpxml = self._cmd.run_capture(["virsh", "dumpxml", vm_name])
+            # If the domain has SMM or UEFI (which causes VirtualBox Guru Meditation), replace it
+            if "<smm state='on'/>" in dumpxml or (is_nested and "ovmf" in dumpxml.lower()):
+                logger.warning(
+                    f"VM '{vm_name}' has unsafe SMM/UEFI settings that trigger VirtualBox crashes. "
+                    "Recreating domain with safe nested BIOS profile..."
+                )
+                self._cmd.run(["virsh", "destroy", vm_name])
+                self._cmd.run(["virsh", "undefine", vm_name, "--nvram", "--snapshots-metadata"])
+            else:
+                logger.info(f"VM '{vm_name}' already exists with valid profile")
+                self._state.register_resource("vm", vm_name, ResourceOwnership.PRE_EXISTING)
+                return
 
         if edition not in WINDOWS_EVAL_CATALOG:
             logger.warning(f"Unknown Windows edition '{edition}', defaulting to 'win10_eval'")
