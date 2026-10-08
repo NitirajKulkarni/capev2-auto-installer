@@ -76,6 +76,11 @@ Examples:
     parser.add_argument("--watch", action="store_true",
                        help="Continuous monitoring mode (with --diagnose)")
 
+    parser.add_argument("--windows-edition", type=str, choices=["win10_eval", "win11_eval"],
+                        help="Windows Enterprise Evaluation edition (win10_eval or win11_eval)")
+    parser.add_argument("--auto-download-iso", action="store_true",
+                        help="Automatically download official Microsoft Windows Enterprise Evaluation ISO")
+
     # Uninstall options
     parser.add_argument("--keep-cape-user", action="store_true")
     parser.add_argument("--keep-data", action="store_true")
@@ -99,6 +104,12 @@ def main() -> int:
     except Exception as e:
         print(f"[ERROR] Failed to load configuration: {e}", file=sys.stderr)
         return 1
+
+    # Apply CLI overrides
+    if args.windows_edition:
+        config.set("guest.windows_edition", args.windows_edition)
+    if args.auto_download_iso:
+        config.set("guest.auto_download_iso", True)
 
     # Setup logging
     log_level = args.log_level or os.environ.get("CAPE_LOG_LEVEL") or config.get("logging.level", "INFO")

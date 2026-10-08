@@ -31,6 +31,83 @@ from cape_auto.reporting import ReportGenerator
 
 logger = get_logger("orchestrator")
 
+# ═════════════════════════════════════════════════════════════════════
+# WINDOWS ENTERPRISE EVALUATION & MALWARE ANALYSIS POLICIES
+# ═════════════════════════════════════════════════════════════════════
+
+WINDOWS_EVAL_CATALOG = {
+    "win10_eval": {
+        "name": "Windows 10 Enterprise Evaluation (x64 English)",
+        "edition_label": "Windows 10 Enterprise Eval",
+        "default_filename": "win10-enterprise-eval.iso",
+        "os_variant": "win10",
+        "min_disk_gb": 60,
+        "recommended_ram_mb": 4096,
+        "recommended_vcpus": 2,
+        "needs_uefi": False,
+        "urls": [
+            "https://software-static.download.prss.microsoft.com/dbazure/9882d4ba-ab90-4ec6-a197-6a16223590b1/19045.2006.220908-0225.21h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso",
+            "https://go.microsoft.com/fwlink/p/?LinkID=2195404",
+        ],
+    },
+    "win11_eval": {
+        "name": "Windows 11 Enterprise Evaluation (x64 English)",
+        "edition_label": "Windows 11 Enterprise Eval",
+        "default_filename": "win11-enterprise-eval.iso",
+        "os_variant": "win11",
+        "min_disk_gb": 80,
+        "recommended_ram_mb": 8192,
+        "recommended_vcpus": 4,
+        "needs_uefi": True,
+        "urls": [
+            "https://software-static.download.prss.microsoft.com/dbazure/88886883-490b-4eb1-b293-8b7762635952/26100.1.240331-1435.ge_release_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso",
+            "https://go.microsoft.com/fwlink/p/?LinkID=2195406",
+        ],
+    },
+}
+
+TINY11_PROHIBITED_PATTERNS = [
+    "tiny11", "tiny-11", "tiny10", "tiny-10", "micro10",
+    "ghostspectre", "ghost-spectre", "revisle", "revi-os", "revios",
+]
+
+
+def render_ascii_progress_bar(current: int, total: int, width: int = 24) -> str:
+    """Render an ASCII progress bar: [████████████░░░░░░░░░░░░]  50%"""
+    if total <= 0:
+        return f"[{'░' * width}]   0%"
+    pct = max(0, min(100, int((current / total) * 100)))
+    filled = max(0, min(width, int((current / total) * width)))
+    empty = width - filled
+    bar = "█" * filled + "░" * empty
+    return f"[{bar}] {pct:3d}%"
+
+
+def validate_iso_policy(path_or_url: str) -> None:
+    """
+    Enforce strict policy prohibiting Tiny11 and stripped Windows images.
+    Malware analysis strictly requires authentic, full-fidelity Windows OS.
+    """
+    if not path_or_url:
+        return
+    lower = path_or_url.lower()
+    for pattern in TINY11_PROHIBITED_PATTERNS:
+        if pattern in lower:
+            raise StageError(
+                f"STRICT POLICY VIOLATION: Tiny11 / stripped OS image detected ('{path_or_url}').\n"
+                "  Tiny11 and stripped OS builds are STRICTLY PROHIBITED for malware analysis!\n"
+                "  Reason: Stripped builds remove critical Windows subsystems including:\n"
+                "    - Windows Defender & Antimalware Scan Interface (AMSI)\n"
+                "    - Event Tracing for Windows (ETW) and kernel logging channels\n"
+                "    - Complete Windows Management Instrumentation (WMI) providers\n"
+                "    - Background Intelligent Transfer (BITS) & Task Scheduler\n"
+                "    - Standard COM interfaces and baseline registry structures\n"
+                "  Malware samples detect stripped environments, crash prematurely, or refuse\n"
+                "  to detonate, invalidating CAPEv2 behavioral analysis.\n"
+                "  Requirement: Use official Windows 10 Enterprise Evaluation or Windows 11 Enterprise Evaluation.",
+                stage="VM_CREATE",
+            )
+
 
 class Orchestrator:
     """
@@ -76,6 +153,72 @@ class Orchestrator:
         )
 
     # ═══════════════════════════════════════════════════════════════════
+    # PROGRESS & UI RENDERING
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _render_stage_banner(
+        self, stage_idx: int, total_stages: int, stage_name: str, attempt: int, max_repair: int
+    ) -> None:
+        """Render a high-visibility, organized stage banner with live progress bar."""
+        bar = render_ascii_progress_bar(stage_idx + 1, total_stages, width=24)
+        desc = self._get_stage_description(stage_name)
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        logger.info("═" * 78)
+        logger.info(f"  {bar}  |  STAGE {stage_idx + 1}/{total_stages}: {stage_name}")
+        logger.info(f"  ▶ Description: {desc}")
+        logger.info(f"  ▶ Attempt:     {attempt} of {max_repair}   |   Started: {now_str}")
+        logger.info("═" * 78)
+
+    def _render_stage_result(
+        self, stage_idx: int, total_stages: int, stage_name: str, status: str, duration: float, detail: str = ""
+    ) -> None:
+        """Render organized stage outcome indicator."""
+        dur_str = f"{duration:.1f}s"
+        if status == "SUCCESS":
+            logger.info(f"  [✓ PASS] Stage {stage_idx + 1}/{total_stages} ({stage_name}) completed in {dur_str}")
+        elif status == "SKIPPED":
+            logger.info(f"  [↷ SKIP] Stage {stage_idx + 1}/{total_stages} ({stage_name}) skipped: {detail}")
+        elif status == "FAILED":
+            logger.error(f"  [✗ FAIL] Stage {stage_idx + 1}/{total_stages} ({stage_name}) failed after {dur_str}: {detail}")
+        logger.info("─" * 78)
+
+    def _render_summary_dashboard(self, overall_success: bool, total_elapsed: float) -> None:
+        """Render a clean, organized completion dashboard."""
+        elapsed_m = int(total_elapsed // 60)
+        elapsed_s = int(total_elapsed % 60)
+        dur_str = f"{elapsed_m}m {elapsed_s:02d}s" if elapsed_m > 0 else f"{elapsed_s}s"
+
+        completed = [s for s in INSTALLATION_STAGES if self._state.get_stage(s).status == StageStatus.SUCCESS.value]
+        failed = self._state.get_failed_stages()
+        skipped = [s for s in INSTALLATION_STAGES if self._state.get_stage(s).status == StageStatus.SKIPPED.value]
+
+        logger.info("╔" + "═" * 76 + "╗")
+        logger.info(f"║ {'CAPEv2 INSTALLATION SUMMARY':^74} ║")
+        logger.info("╠" + "═" * 76 + "╣")
+        status_text = "COMPLETE / SUCCESS" if overall_success else "PARTIAL / REQUIRES ATTENTION"
+        logger.info(f"║  Overall Status:    {status_text:<54} ║")
+        logger.info(f"║  Duration:          {dur_str:<54} ║")
+        logger.info(f"║  Stages Completed:  {len(completed)}/{len(INSTALLATION_STAGES):<52} ║")
+        if failed:
+            failed_str = ", ".join(failed)[:52]
+            logger.info(f"║  Failed Stages:     {failed_str:<54} ║")
+        if skipped:
+            skipped_str = ", ".join(skipped)[:52]
+            logger.info(f"║  Skipped Stages:    {skipped_str:<54} ║")
+        logger.info("╟" + "─" * 76 + "╢")
+        logger.info(f"║  Services & Access:{' ' * 55} ║")
+        web_url = f"http://{self._config.get_str('network.web_bind', '127.0.0.1')}:{self._config.get_int('network.web_port', 8000)}"
+        logger.info(f"║    ▶ Web Interface: {web_url:<54} ║")
+        root_path = self._config.get_str('installation.cape_root', '/opt/CAPEv2')
+        logger.info(f"║    ▶ CAPE Root:     {root_path:<54} ║")
+        if self._config.get_bool("guest.enabled"):
+            ed_info = WINDOWS_EVAL_CATALOG.get(self._config.get_str("guest.windows_edition", "win10_eval").lower(), {})
+            vm_info = f"{self._config.get_str('guest.name', 'cape-win')} ({ed_info.get('edition_label', 'Win Eval')})"
+            logger.info(f"║    ▶ Analysis VM:   {vm_info[:54]:<54} ║")
+        logger.info("╚" + "═" * 76 + "╝")
+
+    # ═══════════════════════════════════════════════════════════════════
     # PRIMARY MODES
     # ═══════════════════════════════════════════════════════════════════
 
@@ -111,23 +254,33 @@ class Orchestrator:
         # Execute stages
         max_repair = self._config.get_int("installation.max_repair_attempts", 3)
         overall_success = True
+        total_stages = len(INSTALLATION_STAGES)
+        install_start_time = time.monotonic()
 
-        for i in range(start_idx, len(INSTALLATION_STAGES)):
+        for i in range(start_idx, total_stages):
             stage_name = INSTALLATION_STAGES[i]
             stage = self._state.get_stage(stage_name)
 
             # Skip already completed stages
             if stage.status == StageStatus.SUCCESS.value:
-                logger.info(f"Stage {stage_name}: already completed, skipping")
+                self._render_stage_result(i, total_stages, stage_name, "SKIPPED", 0.0, "already completed")
                 continue
             if stage.status == StageStatus.SKIPPED.value:
+                self._render_stage_result(i, total_stages, stage_name, "SKIPPED", 0.0, "skipped by configuration")
                 continue
 
+            stage_start = time.monotonic()
             # Execute stage
-            success = self._execute_stage_with_repair(stage_name, max_repair)
+            success = self._execute_stage_with_repair(stage_name, max_repair, stage_idx=i, total_stages=total_stages)
+            stage_dur = time.monotonic() - stage_start
 
-            if not success:
+            if success:
+                self._render_stage_result(i, total_stages, stage_name, "SUCCESS", stage_dur)
+            else:
                 overall_success = False
+                stage_obj = self._state.get_stage(stage_name)
+                err_detail = stage_obj.error_message or "Unknown failure"
+                self._render_stage_result(i, total_stages, stage_name, "FAILED", stage_dur, err_detail)
                 # Check if we can continue
                 if self._is_blocking_failure(stage_name):
                     logger.error(f"Stage {stage_name} failed and blocks further progress")
@@ -141,10 +294,10 @@ class Orchestrator:
         # Generate reports
         self._reporter.generate_final_report(overall_success)
 
+        total_elapsed = time.monotonic() - install_start_time
+        self._render_summary_dashboard(overall_success, total_elapsed)
+
         if overall_success:
-            logger.info("=" * 60)
-            logger.info("CAPEv2 Installation: COMPLETE")
-            logger.info("=" * 60)
             return 0
         else:
             failed = self._state.get_failed_stages()
@@ -537,12 +690,12 @@ class Orchestrator:
     # STAGE EXECUTION ENGINE
     # ═══════════════════════════════════════════════════════════════════
 
-    def _execute_stage_with_repair(self, stage_name: str, max_repair: int) -> bool:
+    def _execute_stage_with_repair(
+        self, stage_name: str, max_repair: int, stage_idx: int = 0, total_stages: int = len(INSTALLATION_STAGES)
+    ) -> bool:
         """Execute a stage with automatic diagnosis and repair on failure."""
         for attempt in range(1, max_repair + 1):
-            logger.info(f"{'─' * 40}")
-            logger.info(f"Stage: {stage_name} (attempt {attempt}/{max_repair})")
-            logger.info(f"{'─' * 40}")
+            self._render_stage_banner(stage_idx, total_stages, stage_name, attempt, max_repair)
 
             try:
                 self._state.start_stage(stage_name)
@@ -1028,23 +1181,25 @@ class Orchestrator:
             # Don't fail - individual packages may have issues
 
     def _stage_cape_install(self) -> None:
-        """Install CAPE Python environment."""
+        """Install CAPE Python environment pinned to Python 3.12."""
         cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
         cape_user = self._config.get_str("installation.cape_user", "cape")
         python_mgr = self._config.get_str("installation.python_manager", "auto")
 
-        # Determine package manager
+        # Determine package manager: default to uv as uv manages python toolchains automatically
         if python_mgr == "auto":
-            # Check what's available and what upstream prefers
             if self._cmd.run(["which", "uv"]).success:
                 python_mgr = "uv"
             elif os.path.isfile("/etc/poetry/bin/poetry"):
                 python_mgr = "poetry"
             else:
-                python_mgr = "poetry"  # Default to poetry as upstream does
+                python_mgr = "uv"
 
         logger.info(f"Using Python package manager: {python_mgr}")
         self._state.update_manifest("python_manager", python_mgr)
+
+        venv_dir = os.path.join(cape_root, ".venv")
+        venv_python = os.path.join(venv_dir, "bin", "python")
 
         if python_mgr == "poetry":
             # Install poetry if needed
@@ -1053,15 +1208,28 @@ class Orchestrator:
                 self._cmd.run(
                     'curl -sSL https://install.python-poetry.org | '
                     'POETRY_HOME=/etc/poetry python3 -',
-                    shell=True, timeout=120,
+                    shell=True, timeout=180,
                 )
 
-            # Install CAPE deps with poetry
+            # Ensure host has python3.12
+            if not self._cmd.run(["which", "python3.12"]).success:
+                logger.info("Installing python3.12 for Poetry...")
+                self._cmd.run(["apt-get", "install", "-y", "python3.12", "python3.12-venv", "python3.12-dev"], timeout=300)
+
+            py_exec = "python3.12" if self._cmd.run(["which", "python3.12"]).success else "python3.11"
+            self._cmd.run_as_user(
+                ["/etc/poetry/bin/poetry", "env", "use", py_exec],
+                user=cape_user,
+                cwd=cape_root,
+                timeout=60,
+            )
+
             result = self._cmd.run_as_user(
                 ["/etc/poetry/bin/poetry", "install"],
                 user=cape_user,
                 cwd=cape_root,
                 timeout=900,
+                live_output=True,
             )
         elif python_mgr == "uv":
             # Install uv if needed
@@ -1069,23 +1237,58 @@ class Orchestrator:
                 logger.info("Installing uv...")
                 self._cmd.run(
                     'curl -LsSf https://astral.sh/uv/install.sh | sh',
-                    shell=True, timeout=60,
+                    shell=True, timeout=120,
                 )
 
+            # Pin to Python 3.12: uv manages Python versions standalone
+            logger.info("Ensuring Python 3.12 toolchain via uv (avoids Python 3.14 / python-flirt failure)...")
+            self._cmd.run(["uv", "python", "install", "3.12"], timeout=300)
+
+            logger.info(f"Creating Python 3.12 virtual environment at {venv_dir}...")
+            self._cmd.run_as_user(
+                ["uv", "venv", "--python", "3.12", venv_dir],
+                user=cape_user,
+                cwd=cape_root,
+                timeout=180,
+            )
+
+            logger.info("Syncing CAPEv2 dependencies into Python 3.12 environment...")
             result = self._cmd.run_as_user(
-                ["uv", "sync", "--no-install-project"],
+                ["uv", "sync", "--python", "3.12", "--no-install-project"],
                 user=cape_user,
                 cwd=cape_root,
                 timeout=900,
+                live_output=True,
             )
 
-        # Verify Python environment
+        if not result.success:
+            raise StageError(
+                f"Failed to install CAPE Python dependencies: {result.stderr or result.stdout}",
+                stage="CAPE_INSTALL"
+            )
+
+        # Verify critical dependencies (django and flirt) inside virtualenv
+        logger.info("Verifying installed CAPEv2 dependencies (Django and python-flirt)...")
+        active_py = venv_python if os.path.isfile(venv_python) else "python3"
+        verify_res = self._cmd.run_as_user(
+            [active_py, "-c", "import django; import flirt; print('CAPE core dependencies verified')"],
+            user=cape_user,
+            cwd=cape_root,
+            timeout=30,
+        )
+        if not verify_res.success:
+            raise StageError(
+                f"CAPE Python environment verification failed. Essential packages missing: {verify_res.stderr.strip()}",
+                stage="CAPE_INSTALL"
+            )
+
+        # Verify Python environment version
         py_check = self._cmd.run_as_user(
-            ["python3", "--version"],
+            [active_py, "--version"],
             user=cape_user,
             cwd=cape_root,
         )
-        logger.info(f"Python: {py_check.stdout.strip()}")
+        logger.info(f"Virtual environment Python: {py_check.stdout.strip()}")
         self._state.update_manifest("python_version", py_check.stdout.strip())
 
     def _stage_cape_config(self) -> None:
@@ -1342,8 +1545,132 @@ drop = off
         )
         logger.info(f"Created analysis network: {net_name} ({mode})")
 
+    def _download_windows_eval_iso(self, edition: str, dest_path: str, custom_url: Optional[str] = None) -> str:
+        """
+        Download official Microsoft Windows Enterprise Evaluation ISO with live streaming progress bar.
+        Supports resume via HTTP Range headers and fallback to curl.
+        """
+        info = WINDOWS_EVAL_CATALOG.get(edition, WINDOWS_EVAL_CATALOG["win10_eval"])
+        edition_name = info["name"]
+        urls = [custom_url] if custom_url else info["urls"]
+
+        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+        part_path = dest_path + ".part"
+
+        logger.info("┌" + "─" * 76 + "┐")
+        logger.info(f"│ DOWNLOADING OFFICIAL MICROSOFT EVALUATION ISO{' ' * (76 - 46)}│")
+        logger.info(f"│ Target: {edition_name[:64]:<66} │")
+        logger.info(f"│ Path:   {dest_path[:64]:<66} │")
+        logger.info("└" + "─" * 76 + "┘")
+
+        success = False
+        last_error = ""
+
+        import urllib.request
+
+        for url in urls:
+            if not url:
+                continue
+            logger.info(f"Attempting download from: {url}")
+            try:
+                existing_bytes = 0
+                if os.path.isfile(part_path):
+                    existing_bytes = os.path.getsize(part_path)
+
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "*/*",
+                    }
+                )
+                if existing_bytes > 0:
+                    req.add_header("Range", f"bytes={existing_bytes}-")
+                    logger.info(f"Resuming download from byte offset: {existing_bytes} ({existing_bytes / (1024**3):.2f} GB)")
+
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    code = resp.getcode()
+                    content_length = resp.headers.get("Content-Length")
+                    total_bytes = int(content_length) if content_length else 0
+
+                    if code == 206 and existing_bytes > 0:
+                        total_bytes += existing_bytes
+                        mode = "ab"
+                    else:
+                        existing_bytes = 0
+                        mode = "wb"
+
+                    downloaded = existing_bytes
+                    chunk_size = 1024 * 1024  # 1MB
+                    start_time = time.monotonic()
+                    last_log_pct = -1
+
+                    with open(part_path, mode) as out_f:
+                        while True:
+                            chunk = resp.read(chunk_size)
+                            if not chunk:
+                                break
+                            out_f.write(chunk)
+                            downloaded += len(chunk)
+
+                            now = time.monotonic()
+                            elapsed = max(0.001, now - start_time)
+                            speed_mb = (downloaded - existing_bytes) / (1024 * 1024 * elapsed)
+                            pct = int((downloaded / total_bytes) * 100) if total_bytes > 0 else 0
+
+                            if total_bytes > 0:
+                                eta_s = int((total_bytes - downloaded) / max(1, (downloaded - existing_bytes) / elapsed))
+                                eta_str = f"{eta_s // 60:02d}:{eta_s % 60:02d}"
+                                bar = render_ascii_progress_bar(downloaded, total_bytes, width=20)
+                                size_info = f"{downloaded / (1024**3):.2f}/{total_bytes / (1024**3):.2f} GB"
+                                status_line = f"\r  [ISO DL] {bar} | {size_info} | {speed_mb:.1f} MB/s | ETA: {eta_str}"
+                            else:
+                                status_line = f"\r  [ISO DL] Downloaded {downloaded / (1024**3):.2f} GB | {speed_mb:.1f} MB/s"
+
+                            try:
+                                sys.stdout.write(status_line)
+                                sys.stdout.flush()
+                            except Exception:
+                                pass
+
+                            if total_bytes > 0 and (pct // 10) != (last_log_pct // 10):
+                                last_log_pct = pct
+                                logger.info(f"ISO Download progress: {pct}% ({downloaded / (1024**3):.2f} GB / {total_bytes / (1024**3):.2f} GB) @ {speed_mb:.1f} MB/s")
+
+                    print("")
+                    success = True
+                    break
+
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Download attempt via urllib failed: {e}")
+                # Fallback to curl if installed
+                if self._cmd.run(["which", "curl"]).success:
+                    logger.info("Falling back to system curl...")
+                    curl_cmd = ["curl", "-L", "-C", "-", "-o", part_path, "--user-agent", "Mozilla/5.0", url]
+                    res = self._cmd.run(curl_cmd, timeout=3600, live_output=True)
+                    if res.success and os.path.isfile(part_path) and os.path.getsize(part_path) > 500 * 1024 * 1024:
+                        success = True
+                        break
+
+        if success and os.path.isfile(part_path):
+            file_size = os.path.getsize(part_path)
+            if file_size > 500 * 1024 * 1024:
+                if os.path.isfile(dest_path):
+                    os.remove(dest_path)
+                os.rename(part_path, dest_path)
+                logger.info(f"Successfully downloaded {edition_name} to {dest_path} ({file_size / (1024**3):.2f} GB)")
+                self._state.register_resource("iso", dest_path, ResourceOwnership.CREATED_BY_INSTALLER)
+                return dest_path
+
+        raise StageError(
+            f"Failed to download {edition_name}: {last_error}. "
+            "Please check network connectivity or provide an ISO path in config.toml.",
+            stage="VM_CREATE",
+        )
+
     def _stage_vm_create(self) -> None:
-        """Create analysis VM."""
+        """Create analysis VM with Windows 10/11 Enterprise Evaluation."""
         if not self._config.get_bool("guest.enabled"):
             self._state.skip_stage("VM_CREATE", "Guest provisioning disabled")
             return
@@ -1355,6 +1682,13 @@ drop = off
         memory = self._config.get_int("guest.memory_mb", 8192)
         vcpus = self._config.get_int("guest.vcpus", 4)
         net_name = self._config.get_str("network.libvirt_network_name", "cape-analysis")
+        edition = self._config.get_str("guest.windows_edition", "win10_eval").lower()
+        auto_download = self._config.get_bool("guest.auto_download_iso", False)
+        custom_url = self._config.get_str("guest.eval_iso_url", "").strip()
+
+        # STRICT PROHIBITION CHECK: Reject Tiny11 or stripped builds
+        validate_iso_policy(iso_path)
+        validate_iso_policy(custom_url)
 
         # Check if VM already exists
         vm_list = self._cmd.run_capture(["virsh", "list", "--all"])
@@ -1363,23 +1697,62 @@ drop = off
             self._state.register_resource("vm", vm_name, ResourceOwnership.PRE_EXISTING)
             return
 
-        if not iso_path or not os.path.isfile(iso_path):
-            logger.warning("No Windows ISO provided - VM creation deferred")
-            self._state.block_stage("VM_CREATE", "Windows ISO not provided")
-            return
+        if edition not in WINDOWS_EVAL_CATALOG:
+            logger.warning(f"Unknown Windows edition '{edition}', defaulting to 'win10_eval'")
+            edition = "win10_eval"
 
-        # Check disk space
+        eval_info = WINDOWS_EVAL_CATALOG[edition]
+        default_iso_dir = "/var/lib/libvirt/images"
+        default_iso_path = os.path.join(default_iso_dir, eval_info["default_filename"])
+
+        if not iso_path or not os.path.isfile(iso_path):
+            if os.path.isfile(default_iso_path) and os.path.getsize(default_iso_path) > 500 * 1024 * 1024:
+                logger.info(f"Found existing evaluation ISO at default location: {default_iso_path}")
+                iso_path = default_iso_path
+            elif auto_download:
+                logger.info(f"Auto-downloading {eval_info['name']} ISO...")
+                iso_path = self._download_windows_eval_iso(edition, default_iso_path, custom_url)
+            else:
+                logger.warning("═" * 78)
+                logger.warning("  WINDOWS ENTERPRISE EVALUATION ISO REQUIRED FOR MALWARE ANALYSIS")
+                logger.warning("═" * 78)
+                logger.warning(f"  Target Edition: {eval_info['name']}")
+                logger.warning("  Strict Policy:  NO TINY11 or stripped OS builds allowed!")
+                logger.warning("  Reason:         Malware analysis requires authentic Defender, ETW, and WMI.")
+                logger.warning("  Official Microsoft Download URLs:")
+                for u in eval_info["urls"]:
+                    logger.warning(f"    - {u}")
+                logger.warning("  How to proceed:")
+                logger.warning("    Option 1: Set guest.auto_download_iso = true in config.toml to auto-download.")
+                logger.warning("    Option 2: Download ISO manually and set guest.iso_path in config.toml.")
+                logger.warning(f"    Option 3: Place ISO at {default_iso_path}")
+                logger.warning("═" * 78)
+                self._state.block_stage(
+                    "VM_CREATE",
+                    f"Windows Evaluation ISO not provided. Auto-download is disabled. Download {eval_info['name']}."
+                )
+                return
+
+        # Double check validated path
+        validate_iso_policy(iso_path)
+
+        # Check disk space & directory
         disk_dir = os.path.dirname(disk_path)
         Path(disk_dir).mkdir(parents=True, exist_ok=True)
 
         # Create disk
-        logger.info(f"Creating VM disk: {disk_path} ({disk_size}G)")
-        self._cmd.run_checked([
-            "qemu-img", "create", "-f", "qcow2", disk_path, f"{disk_size}G"
-        ])
+        if not os.path.isfile(disk_path):
+            logger.info(f"Creating VM disk: {disk_path} ({disk_size}G)")
+            self._cmd.run_checked([
+                "qemu-img", "create", "-f", "qcow2", disk_path, f"{disk_size}G"
+            ])
 
-        # Create VM with virt-install
-        logger.info(f"Creating VM: {vm_name}")
+        # Configure virt-install
+        os_variant = eval_info["os_variant"]
+        use_uefi = self._config.get_str("guest.uefi", "").lower()
+        if not use_uefi:
+            use_uefi = "true" if eval_info["needs_uefi"] else "false"
+
         install_cmd = [
             "virt-install",
             "--name", vm_name,
@@ -1389,18 +1762,25 @@ drop = off
             "--cdrom", iso_path,
             "--network", f"network={net_name},model=virtio",
             "--graphics", "vnc,listen=127.0.0.1",
-            "--os-variant", "win10",
-            "--boot", "hd,cdrom",
+            "--os-variant", os_variant,
             "--noautoconsole",
         ]
 
-        result = self._cmd.run(install_cmd, timeout=120)
+        if use_uefi in ("true", "1", "yes"):
+            install_cmd.extend(["--boot", "uefi"])
+            if edition == "win11_eval":
+                install_cmd.extend(["--features", "smm=on", "--tpm", "backend.type=emulator,model=tpm-tis"])
+        else:
+            install_cmd.extend(["--boot", "hd,cdrom"])
+
+        logger.info(f"Creating VM: {vm_name} ({eval_info['name']})")
+        result = self._cmd.run(install_cmd, timeout=180)
         if result.success:
             self._state.register_resource(
                 "vm", vm_name, ResourceOwnership.CREATED_BY_INSTALLER,
                 disk_path=disk_path,
             )
-            logger.info(f"VM '{vm_name}' created. Windows installation will begin on boot.")
+            logger.info(f"VM '{vm_name}' created. Windows installation ready.")
         else:
             raise StageError(f"VM creation failed: {result.stderr}", stage="VM_CREATE")
 
@@ -1410,16 +1790,19 @@ drop = off
             self._state.skip_stage("VM_INSTALL", "Guest disabled")
             return
 
-        iso_path = self._config.get_str("guest.iso_path")
-        if not iso_path:
+        edition = self._config.get_str("guest.windows_edition", "win10_eval").lower()
+        eval_info = WINDOWS_EVAL_CATALOG.get(edition, WINDOWS_EVAL_CATALOG["win10_eval"])
+        iso_path = self._config.get_str("guest.iso_path") or os.path.join("/var/lib/libvirt/images", eval_info["default_filename"])
+
+        if not iso_path or not os.path.isfile(iso_path):
             self._state.skip_stage("VM_INSTALL", "No ISO provided")
             return
 
-        logger.info("Windows installation requires manual steps inside VM.")
-        logger.info("Use VNC viewer or virt-manager to complete Windows setup.")
+        logger.info("Windows installation requires completion inside VM.")
+        logger.info(f"Connecting to VM '{self._config.get_str('guest.name', 'cape-win')}' via VNC viewer or virt-manager.")
         self._state.block_stage(
             "VM_INSTALL",
-            "Manual Windows installation required. Use virt-manager to complete setup."
+            "Manual Windows installation required. Connect with virt-manager or VNC to complete setup."
         )
 
     def _stage_vm_config(self) -> None:

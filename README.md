@@ -237,17 +237,75 @@ web_port = 8000
 enabled = true
 name = "cape-win"
 platform = "windows"
-iso_path = ""                    # Path to Windows ISO (if empty, VM setup is skipped)
+windows_edition = "win10_eval"    # "win10_eval" (recommended) or "win11_eval"
+auto_download_iso = false         # Set to true or use --auto-download-iso
+iso_path = ""                     # Path to Windows ISO (if already downloaded)
+eval_iso_url = ""                 # Optional custom mirror URL
 disk_size_gb = 80
 memory_mb = 8192
 vcpus = 4
 snapshot_name = "cape-clean"
+uefi = ""                         # Auto-detected based on edition
 
 [database]
 backend = "auto"                 # "auto", "mongodb", "postgresql"
 mongodb_host = "127.0.0.1"
 mongodb_port = 27017
 ```
+
+---
+
+## 🪟 Windows Guest Provisioning & Analysis OS Policy
+
+CAPEv2 dynamic malware analysis requires **full-fidelity, untampered Windows operating systems** to capture authentic behavioral traces, API hooks, and network telemetry.
+
+### 🛡️ Strictly Prohibited: Tiny11 & Stripped Windows Builds
+> [!CAUTION]
+> **Strictly NO Tiny11, Tiny10, or stripped custom ISOs!**  
+> Stripped OS builds (such as Tiny11, Micro10, GhostSpectre, or ReviOS) remove vital operating system subsystems:
+> - **Windows Defender & AMSI (Antimalware Scan Interface)**: Stripped out. Malware checks for Defender presence to deploy bypasses or detect sandboxes.
+> - **Event Tracing for Windows (ETW)**: Kernel trace providers disabled, blinding behavioral analyzers.
+> - **WMI Providers & Namespaces**: Malware queries WMI for evasion; on stripped builds, queries crash the sample.
+> - **Task Scheduler & BITS**: Persistence mechanisms fail to execute.
+> - **Authentic Registry Hives & COM Objects**: Real-world malware terminates or refuses to detonate when missing.
+> 
+> The installer enforces this policy at configuration time and during ISO verification.
+
+### 🌟 Supported: Official Microsoft Enterprise Evaluation ISOs
+The installer provides full automated support for official Microsoft 90-day Evaluation ISOs:
+| Edition | Config Value | Minimum Disk | Recommended RAM | Firmware | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Windows 10 Enterprise Eval** | `win10_eval` | 60 GB | 4096 - 8192 MB | BIOS / SeaBIOS | **Recommended for speed, stability, and broad malware compatibility.** |
+| **Windows 11 Enterprise Eval** | `win11_eval` | 80 GB | 8192 MB+ | UEFI + TPM 2.0 | Automated with OVMF UEFI and TPM emulator (`swtpm`). |
+
+#### One-Click Auto-Download:
+```bash
+# Auto-download Windows 10 Enterprise Evaluation ISO & provision VM:
+sudo ./install.sh --auto-download-iso
+
+# Auto-download Windows 11 Enterprise Evaluation ISO:
+sudo ./install.sh --windows-edition win11_eval --auto-download-iso
+```
+
+---
+
+## 📊 Live Progress Bar & Clean Terminal UI
+
+The installer features an organized, real-time ASCII progress bar and stage dashboard:
+- **ASCII Progress Bar**: Displays stage completion percentage:
+  ```
+  ══════════════════════════════════════════════════════════════════════════════
+    [██████████████████░░░░░░░░]  62%  |  STAGE 15/24: VM_CREATE
+    ▶ Task:        Create analysis VM (Windows 10 Enterprise Evaluation)
+    ▶ Attempt:     1 of 3   |   Started: 2026-10-08 13:30:00 UTC
+  ══════════════════════════════════════════════════════════════════════════════
+  ```
+- **Real-Time Streaming (`live_output`)**: Commands like `uv sync` and APT operations stream live progress without silent terminal freezing.
+- **Resumable ISO Downloader**: Downloads Microsoft Evaluation ISOs with chunked streaming and dynamic MB/s + ETA tracking:
+  ```
+  [ISO DL] [████████████████░░░░░░░░]  68.4% (3.42/5.00 GB) | 24.1 MB/s | ETA: 01:05
+  ```
+- **Python 3.12 Pinning**: Automatically isolates CAPEv2 into a Python 3.12 environment via `uv`/`poetry`, completely eliminating `python-flirt` wheel missing errors on Python 3.14 hosts and ensuring `django` and `cape-web.service` run stably.
 
 ---
 

@@ -68,19 +68,26 @@ enabled = true
 name = "cape-win"
 # Guest platform
 platform = "windows"
-# Path to Windows ISO (set this to your ISO)
+# Windows Edition: "win10_eval" (Windows 10 Enterprise Evaluation) or "win11_eval" (Windows 11 Enterprise Evaluation)
+# STRICT POLICY: Strictly NO Tiny11! Tiny11 removes Defender, ETW, WMI, and core APIs, invalidating malware analysis.
+windows_edition = "win10_eval"
+# Automatically download official Microsoft Enterprise Evaluation ISO if iso_path is empty
+auto_download_iso = false
+# Path to local Windows ISO (leave empty if using auto_download_iso)
 iso_path = ""
+# Custom/mirror URL for Windows Evaluation ISO download (optional; defaults to official Microsoft CDN)
+eval_iso_url = ""
 # Path for virtual disk
 disk_path = "/var/lib/libvirt/images/cape-win.qcow2"
-# Disk size in GB
+# Disk size in GB (Win10: 60-80GB, Win11: 80-100GB)
 disk_size_gb = 80
-# RAM in MB
+# RAM in MB (Win10: 4096-8192MB, Win11: 8192MB+)
 memory_mb = 8192
 # Virtual CPUs
 vcpus = 4
 # Snapshot name for clean state
 snapshot_name = "cape-clean"
-# Use UEFI boot (auto-detect if empty)
+# Use UEFI boot ("" = auto-detect based on Windows edition, "true", or "false")
 uefi = ""
 
 [guest.agent]

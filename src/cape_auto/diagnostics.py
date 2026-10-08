@@ -298,9 +298,11 @@ class DiagnosticsEngine:
         result.raw_data["uv_installed"] = uv_check.success
 
         if os.path.isdir(self._cape_root):
-            # Try importing CAPE
+            # Try importing CAPE using venv python if available
+            venv_python = os.path.join(self._cape_root, ".venv", "bin", "python")
+            py_bin = venv_python if os.path.isfile(venv_python) else "python3"
             test_import = self._cmd.run(
-                ["python3", "-c", "import sys; sys.path.insert(0, '.'); import lib.cuckoo.core.startup"],
+                [py_bin, "-c", "import sys; sys.path.insert(0, '.'); import lib.cuckoo.core.startup"],
                 cwd=self._cape_root,
                 timeout=30,
             )

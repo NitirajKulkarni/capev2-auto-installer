@@ -148,6 +148,10 @@ class Config:
             "CAPE_REF": "installation.cape_ref",
             "CAPE_NON_INTERACTIVE": "installation.non_interactive",
             "CAPE_PYTHON_MANAGER": "installation.python_manager",
+            "CAPE_WINDOWS_EDITION": "guest.windows_edition",
+            "CAPE_AUTO_DOWNLOAD_ISO": "guest.auto_download_iso",
+            "CAPE_ISO_PATH": "guest.iso_path",
+            "CAPE_EVAL_ISO_URL": "guest.eval_iso_url",
             "HTTP_PROXY": "proxy.http_proxy",
             "HTTPS_PROXY": "proxy.https_proxy",
             "NO_PROXY": "proxy.no_proxy",
@@ -232,8 +236,16 @@ class Config:
         # Guest ISO check
         if self.get_bool("guest.enabled"):
             iso = self.get_str("guest.iso_path")
-            if not iso:
-                issues.append("guest.iso_path is empty - Windows guest provisioning will be skipped")
+            auto_download = self.get_bool("guest.auto_download_iso", False)
+            edition = self.get_str("guest.windows_edition", "win10_eval").lower()
+
+            if iso and any(bad in iso.lower() for bad in ("tiny11", "tiny-11", "tiny10", "tiny-10", "micro10", "ghostspectre")):
+                issues.append("STRICT PROHIBITION: Tiny11/stripped Windows ISO detected in guest.iso_path! Malware analysis requires official Windows 10/11 Enterprise Evaluation.")
+            elif not iso and not auto_download:
+                issues.append("guest.iso_path is empty - Windows guest provisioning will be deferred unless auto_download_iso is enabled")
+
+            if edition not in ("win10_eval", "win11_eval"):
+                issues.append(f"Invalid guest.windows_edition: '{edition}'. Must be 'win10_eval' or 'win11_eval'.")
 
         # Network validation
         subnet = self.get_str("network.subnet")

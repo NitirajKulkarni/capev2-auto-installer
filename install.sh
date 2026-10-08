@@ -46,15 +46,24 @@ Usage:
     sudo ./install.sh --reset-failed    Reset failed stage and retry
     sudo ./install.sh --update          Update existing CAPEv2
     sudo ./install.sh --self-test       Run framework self-tests
+    sudo ./install.sh --auto-download-iso Auto-download official Windows Eval ISO
+    sudo ./install.sh --windows-edition <ed> Windows edition: win10_eval (default) or win11_eval
     sudo ./install.sh --help            Show this help
 
 Configuration:
     Edit config.toml before running, or accept safe defaults.
-    Supply Windows ISO path in config.toml for guest automation.
+    Windows 10/11 Enterprise Evaluation ISOs supported for malware analysis.
+    (Strictly NO Tiny11 - stripped builds break telemetry and analysis).
 
 Examples:
-    # Fresh install with defaults
+    # Fresh install with defaults (Windows 10 Enterprise Eval)
     sudo ./install.sh
+
+    # Auto-download Windows 10 Enterprise Eval ISO
+    sudo ./install.sh --auto-download-iso
+
+    # Auto-download Windows 11 Enterprise Eval ISO
+    sudo ./install.sh --windows-edition win11_eval --auto-download-iso
 
     # Resume after reboot
     sudo ./install.sh --resume
@@ -139,7 +148,6 @@ find_python() {
         python3.12
         python3.11
         python3.10
-        python3
     )
     for cmd in "${candidates[@]}"; do
         if command -v "$cmd" &>/dev/null; then
@@ -147,14 +155,41 @@ find_python() {
             if [[ -n "$ver" ]]; then
                 major="${ver%%.*}"
                 minor="${ver##*.}"
-                if [[ $major -ge $MIN_PYTHON_MAJOR && $minor -ge $MIN_PYTHON_MINOR ]]; then
+                if [[ $major -eq $MIN_PYTHON_MAJOR && $minor -ge $MIN_PYTHON_MINOR && $minor -le 12 ]]; then
                     PYTHON_BIN=$(command -v "$cmd")
-                    log_ok "Found Python $ver at $PYTHON_BIN"
+                    log_ok "Found compatible Python $ver at $PYTHON_BIN (pinned for CAPEv2 dependencies)"
                     return 0
                 fi
             fi
         fi
     done
+
+    # Fallback to system python3, warning if > 3.12 (e.g. Python 3.14)
+    if command -v python3 &>/dev/null; then
+        ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || true)
+        if [[ -n "$ver" ]]; then
+            major="${ver%%.*}"
+            minor="${ver##*.}"
+            if [[ $major -ge $MIN_PYTHON_MAJOR && $minor -ge $MIN_PYTHON_MINOR ]]; then
+                if [[ $minor -gt 12 ]]; then
+                    log_warn "Host Python is $ver (> 3.12). CAPEv2 wheels (python-flirt) require Python 3.12."
+                    log_info "Attempting to install python3.12 package..."
+                    if command -v apt-get &>/dev/null; then
+                        apt-get update -qq 2>/dev/null || true
+                        apt-get install -y python3.12 python3.12-venv python3.12-dev 2>/dev/null || true
+                        if command -v python3.12 &>/dev/null; then
+                            PYTHON_BIN=$(command -v python3.12)
+                            log_ok "Installed and selected Python 3.12 at $PYTHON_BIN"
+                            return 0
+                        fi
+                    fi
+                fi
+                PYTHON_BIN=$(command -v python3)
+                log_ok "Using Python $ver at $PYTHON_BIN (uv will manage isolated Python 3.12 environment)"
+                return 0
+            fi
+        fi
+    fi
     return 1
 }
 

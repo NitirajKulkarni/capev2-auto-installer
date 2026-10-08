@@ -73,6 +73,20 @@ key4 = 3.14
         warnings = config.validate()
         self.assertIsInstance(warnings, list)
 
+    def test_tiny11_validation_warning(self):
+        config = Config(self.config_path, self.temp_dir.name)
+        config.set("guest.enabled", True)
+        config.set("guest.iso_path", "/var/iso/tiny11_pro.iso")
+        warnings = config.validate()
+        self.assertTrue(any("Tiny11" in w for w in warnings))
+
+    def test_windows_edition_validation(self):
+        config = Config(self.config_path, self.temp_dir.name)
+        config.set("guest.enabled", True)
+        config.set("guest.windows_edition", "invalid_edition")
+        warnings = config.validate()
+        self.assertTrue(any("Invalid guest.windows_edition" in w for w in warnings))
+
     def test_missing_config_file(self):
         missing_path = os.path.join(self.temp_dir.name, "missing.toml")
         with self.assertRaises(ConfigError):

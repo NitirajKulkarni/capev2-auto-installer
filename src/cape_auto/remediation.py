@@ -184,20 +184,27 @@ class RemediationEngine:
             return False
 
         # Detect package manager
+        uv_check = self._cmd.run(["which", "uv"])
+        uv_bin = "uv" if uv_check.success else ("/usr/local/bin/uv" if os.path.isfile("/usr/local/bin/uv") else None)
         poetry_path = "/etc/poetry/bin/poetry"
-        uv_path = "/usr/local/bin/uv"
+        poetry_bin = poetry_path if os.path.isfile(poetry_path) else ("poetry" if self._cmd.run(["which", "poetry"]).success else None)
 
-        if os.path.isfile(uv_path):
-            logger.info("Using uv for environment repair")
+        if uv_bin:
+            logger.info("Using uv for environment repair (pinning Python 3.12 for python-flirt / django)")
+            self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300)
+            venv_path = os.path.join(cape_root, ".venv")
+            self._cmd.run([uv_bin, "venv", "--python", "3.12", venv_path], cwd=cape_root, timeout=120)
             result = self._cmd.run(
-                [uv_path, "sync", "--no-install-project"],
+                [uv_bin, "sync", "--python", "3.12", "--no-install-project"],
                 cwd=cape_root,
                 timeout=600,
             )
-        elif os.path.isfile(poetry_path):
+        elif poetry_bin:
             logger.info("Using poetry for environment repair")
+            py_exec = "python3.12" if self._cmd.run(["which", "python3.12"]).success else "python3.11"
+            self._cmd.run([poetry_bin, "env", "use", py_exec], cwd=cape_root, timeout=60)
             result = self._cmd.run(
-                [poetry_path, "install"],
+                [poetry_bin, "install"],
                 cwd=cape_root,
                 timeout=600,
             )
@@ -206,7 +213,13 @@ class RemediationEngine:
             return False
 
         if result.success:
-            logger.info("Python environment repaired")
+            venv_py = os.path.join(cape_root, ".venv", "bin", "python")
+            if os.path.isfile(venv_py):
+                v_check = self._cmd.run([venv_py, "-c", "import django; import flirt; print('OK')"], timeout=30)
+                if not v_check.success:
+                    logger.warning("Dependencies missing after repair: django or flirt import failed")
+                    return False
+            logger.info("Python environment repaired and verified successfully")
             return True
 
         logger.warning(f"Python environment repair failed: {result.stderr[:200]}")

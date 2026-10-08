@@ -93,6 +93,7 @@ class CommandRunner:
         sensitive: bool = False,
         shell: bool = False,
         input_data: Optional[str] = None,
+        live_output: bool = False,
     ) -> CommandResult:
         """
         Execute a command with full instrumentation.
@@ -107,6 +108,7 @@ class CommandRunner:
             sensitive: If True, redact entire command from logs
             shell: Use shell execution (only when necessary, e.g. pipes)
             input_data: Data to send to stdin
+            live_output: Stream stdout lines in real time to logger
         """
         from cape_auto.exceptions import CommandError
 
@@ -144,19 +146,44 @@ class CommandRunner:
         timed_out = False
 
         try:
-            proc = subprocess.run(
-                command if not shell else cmd_str,
-                shell=shell,
-                cwd=cwd,
-                env=run_env,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                input=input_data,
-            )
-            exit_code = proc.returncode
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
+            if live_output and not input_data:
+                proc = subprocess.Popen(
+                    command if not shell else cmd_str,
+                    shell=shell,
+                    cwd=cwd,
+                    env=run_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                )
+                stdout_lines = []
+                while True:
+                    line = proc.stdout.readline()
+                    if not line and proc.poll() is not None:
+                        break
+                    if line:
+                        stdout_lines.append(line)
+                        line_stripped = line.rstrip()
+                        if line_stripped and not sensitive:
+                            logger.info(f"  │ {line_stripped}")
+                stderr = proc.stderr.read() or ""
+                stdout = "".join(stdout_lines)
+                exit_code = proc.returncode
+            else:
+                proc = subprocess.run(
+                    command if not shell else cmd_str,
+                    shell=shell,
+                    cwd=cwd,
+                    env=run_env,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    input=input_data,
+                )
+                exit_code = proc.returncode
+                stdout = proc.stdout or ""
+                stderr = proc.stderr or ""
 
         except subprocess.TimeoutExpired:
             timed_out = True
