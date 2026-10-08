@@ -22,8 +22,17 @@ sudo modprobe kvm_intel # or kvm_amd
 
 ### Manual Action Required
 If the CPU does not expose VT-x/AMD-V instructions:
-1. Physical machine: Enter BIOS/UEFI during boot and enable "Intel Virtualization Technology" or "AMD SVM".
-2. Nested VM:
+1. **Physical Machine**: Enter BIOS/UEFI during boot and enable "Intel Virtualization Technology (VT-x)" or "AMD SVM".
+2. **Windows Host (VirtualBox / VMware)**:
+   - On Windows 10/11, Virtualization-Based Security (VBS) or Hyper-V forces VirtualBox into "NEM mode", hiding VT-x from Ubuntu.
+   - Run the automated script: `enable-windows-virtualization.bat` as Administrator on Windows.
+   - Or manually run in elevated CMD:
+     ```cmd
+     bcdedit /set hypervisorlaunchtype off
+     reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v "EnableVirtualizationBasedSecurity" /t REG_DWORD /d 0 /f
+     ```
+   - Then reboot Windows.
+3. **Other Hypervisors**:
    - Proxmox: Set VM CPU type to `host`.
    - VMware ESXi: Enable "Expose hardware assisted virtualization to guest OS".
    - KVM / Libvirt: `<cpu mode='host-passthrough'/>`.

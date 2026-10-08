@@ -101,6 +101,11 @@ The installer is engineered to automatically detect and adapt to both **physical
 | **KVM / QEMU (Parent Host)** | Start VM with `-cpu host` or configure `<cpu mode='host-passthrough'/>` in libvirt XML. |
 | **Cloud Instances (AWS / Azure / GCP)** | Must use instances with nested virtualization enabled (e.g. AWS `*.metal`, Azure `Dv3`/`Dv4`/`Dv5` series). |
 
+> [!IMPORTANT]
+> **Windows 10/11 Host Automated Fix (VirtualBox / VMware):**  
+> If you enabled "Nested VT-x/AMD-V" in VirtualBox or VMware and Ubuntu *still* reports `[FAIL] No hardware virtualization support`, Windows Virtualization-Based Security (VBS) or Hyper-V is running in the background and locking the CPU in "NEM / Snail Mode".  
+> **1-Click Automated Fix:** Run the included [`enable-windows-virtualization.bat`](enable-windows-virtualization.bat) on your Windows machine as Administrator, select **`[1]`**, and reboot Windows.
+
 ---
 
 ## ⚡ Quick Start & Verification Workflow
