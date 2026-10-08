@@ -279,8 +279,8 @@ All 38 test cases pass out-of-the-box across Python 3.10, 3.11, 3.12, and 3.13.
 
 ## 👤 Author & Maintainer
 
-**Nitiraj Kulkarni**  
-*Lead Architect & Author*
+**Nitiraj V. Kulkarni**  
+
 
 ---
 
