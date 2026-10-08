@@ -58,6 +58,7 @@ enabled = false
         self.assertTrue(self.orchestrator._is_blocking_failure("PREFLIGHT"))
         self.assertTrue(self.orchestrator._is_blocking_failure("KVM"))
         self.assertTrue(self.orchestrator._is_blocking_failure("LIBVIRT"))
+        self.assertTrue(self.orchestrator._is_blocking_failure("VM_CREATE"))
         # Non-critical stages should not block whole installation
         self.assertFalse(self.orchestrator._is_blocking_failure("BACKUP"))
         self.assertFalse(self.orchestrator._is_blocking_failure("END_TO_END_TEST"))
@@ -201,6 +202,46 @@ enabled = false
         found_undefine = any("undefine" in cmd for cmd in calls)
         self.assertTrue(found_destroy)
         self.assertTrue(found_undefine)
+
+
+    def test_download_iso_http416_recovery(self):
+        from unittest.mock import patch, MagicMock
+        import urllib.error
+
+        dest_iso = os.path.join(self.temp_dir.name, "win11-eval.iso")
+        part_iso = dest_iso + ".part"
+
+        # Create a tiny invalid leftover part file
+        with open(part_iso, "wb") as f:
+            f.write(b"x" * 50)
+
+        # First call: raises HTTPError 416 (Range Not Satisfiable)
+        err_416 = urllib.error.HTTPError("http://example.com", 416, "Range Not Satisfiable", {}, None)
+
+        # Second call: returns valid response context manager
+        resp_mock = MagicMock()
+        resp_mock.__enter__.return_value = resp_mock
+        resp_mock.getcode.return_value = 200
+        resp_mock.headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": "5368709120",
+        }
+        resp_mock.read.side_effect = [b"MOCK_ISO_DATA", b""]
+
+        real_getsize = os.path.getsize
+
+        def fake_getsize(path):
+            if path == part_iso:
+                return 5368709120
+            return real_getsize(path)
+
+        with patch("urllib.request.urlopen", side_effect=[err_416, resp_mock]), \
+             patch("os.path.getsize", side_effect=fake_getsize):
+            result = self.orchestrator._download_windows_eval_iso("win11_eval", dest_iso)
+
+        self.assertEqual(result, dest_iso)
+        self.assertTrue(os.path.isfile(dest_iso))
+        self.assertFalse(os.path.isfile(part_iso))
 
 
 if __name__ == "__main__":

@@ -21,6 +21,18 @@ from cape_auto.exceptions import (
 )
 
 
+def normalize_windows_edition(val: str) -> str:
+    """Normalize Windows edition string (case-insensitive with common aliases)."""
+    v = val.strip().lower()
+    if v in ("win10", "win10_eval", "windows10", "windows-10", "windows 10"):
+        return "win10_eval"
+    if v in ("win11", "win11_eval", "windows11", "windows-11", "windows 11"):
+        return "win11_eval"
+    raise argparse.ArgumentTypeError(
+        f"Invalid Windows edition '{val}'. Choose from win10_eval, win11_eval (or win10, win11)."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cape-auto-installer",
@@ -78,7 +90,7 @@ Examples:
     parser.add_argument("--watch", action="store_true",
                        help="Continuous monitoring mode (with --diagnose)")
 
-    parser.add_argument("--windows-edition", type=str, choices=["win10_eval", "win11_eval"],
+    parser.add_argument("--windows-edition", type=normalize_windows_edition,
                         help="Windows Enterprise Evaluation edition (win10_eval or win11_eval)")
     parser.add_argument("--auto-download-iso", action="store_true",
                         help="Automatically download official Microsoft Windows Enterprise Evaluation ISO")

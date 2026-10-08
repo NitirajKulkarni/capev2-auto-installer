@@ -46,8 +46,9 @@ WINDOWS_EVAL_CATALOG = {
         "recommended_vcpus": 2,
         "needs_uefi": False,
         "urls": [
-            "https://software-static.download.prss.microsoft.com/dbazure/9882d4ba-ab90-4ec6-a197-6a16223590b1/19045.2006.220908-0225.21h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso",
             "https://go.microsoft.com/fwlink/p/?LinkID=2195404",
+            "https://software-download.microsoft.com/download/db/444969d5-f34g-4e03-ac9d-1f9786c69161/19044.1288.211006-0501.21h2_release_svc_refresh_CLIENT_LTSC_EVAL_x64FRE_en-us.iso",
+            "https://software-static.download.prss.microsoft.com/dbazure/9882d4ba-ab90-4ec6-a197-6a16223590b1/19045.2006.220908-0225.21h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso",
         ],
     },
     "win11_eval": {
@@ -60,8 +61,8 @@ WINDOWS_EVAL_CATALOG = {
         "recommended_vcpus": 4,
         "needs_uefi": True,
         "urls": [
-            "https://software-static.download.prss.microsoft.com/dbazure/88886883-490b-4eb1-b293-8b7762635952/26100.1.240331-1435.ge_release_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso",
-            "https://go.microsoft.com/fwlink/p/?LinkID=2195406",
+            "https://go.microsoft.com/fwlink/?linkid=2270353",
+            "https://software-static.download.prss.microsoft.com/dbazure/998969d5-f34g-4e03-ac9d-1f9786c66749/26100.1742.240906-0331.ge_release_svc_refresh_CLIENT_IOT_LTSC_EVAL_x64FRE_en-us.iso",
         ],
     },
 }
@@ -644,6 +645,18 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning(f"Could not remove {fpath}: {e}")
 
+        # Purge any partial/interrupted downloads (.part) in images directory
+        images_dir = "/var/lib/libvirt/images"
+        if os.path.isdir(images_dir):
+            for fname in os.listdir(images_dir):
+                if fname.endswith(".part"):
+                    p_file = os.path.join(images_dir, fname)
+                    try:
+                        os.remove(p_file)
+                        logger.info(f"Removed partial download: {p_file}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove {p_file}: {e}")
+
         if os.path.isdir(staging_dir):
             import shutil
             shutil.rmtree(staging_dir, ignore_errors=True)
@@ -1151,7 +1164,8 @@ class Orchestrator:
         kvm_packages = [
             "qemu-kvm", "qemu-system-x86", "qemu-utils",
             "libvirt-daemon-system", "libvirt-clients",
-            "bridge-utils", "virt-manager",
+            "bridge-utils", "virt-manager", "virtinst",
+            "ovmf", "swtpm", "swtpm-tools",
         ]
 
         result = self._cmd.run(
@@ -1664,7 +1678,7 @@ drop = off
     def _download_windows_eval_iso(self, edition: str, dest_path: str, custom_url: Optional[str] = None) -> str:
         """
         Download official Microsoft Windows Enterprise Evaluation ISO with live streaming progress bar.
-        Supports resume via HTTP Range headers and fallback to curl.
+        Supports resume via HTTP Range headers, handles HTTP 416 range errors gracefully, and falls back to curl.
         """
         info = WINDOWS_EVAL_CATALOG.get(edition, WINDOWS_EVAL_CATALOG["win10_eval"])
         edition_name = info["name"]
@@ -1672,6 +1686,13 @@ drop = off
 
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
         part_path = dest_path + ".part"
+
+        # Sanity check: If existing part file is suspiciously tiny (< 1 MB), remove it before starting
+        if os.path.isfile(part_path) and os.path.getsize(part_path) < 1024 * 1024:
+            try:
+                os.remove(part_path)
+            except Exception:
+                pass
 
         logger.info("┌" + "─" * 76 + "┐")
         logger.info(f"│ DOWNLOADING OFFICIAL MICROSOFT EVALUATION ISO{' ' * (76 - 46)}│")
@@ -1683,101 +1704,172 @@ drop = off
         last_error = ""
 
         import urllib.request
+        import urllib.error
+
+        headers_base = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+        }
 
         for url in urls:
             if not url:
                 continue
             logger.info(f"Attempting download from: {url}")
-            try:
+
+            # Try up to 2 passes on the URL:
+            # Pass 1: Attempt resume if part_path exists.
+            # Pass 2: If resume fails with HTTP 416 or 400 (range rejected), delete part_path and restart from offset 0.
+            for attempt_pass in range(2):
                 existing_bytes = 0
                 if os.path.isfile(part_path):
                     existing_bytes = os.path.getsize(part_path)
 
-                req = urllib.request.Request(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "*/*",
-                    }
-                )
+                req = urllib.request.Request(url, headers=dict(headers_base))
                 if existing_bytes > 0:
                     req.add_header("Range", f"bytes={existing_bytes}-")
                     logger.info(f"Resuming download from byte offset: {existing_bytes} ({existing_bytes / (1024**3):.2f} GB)")
 
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    code = resp.getcode()
-                    content_length = resp.headers.get("Content-Length")
-                    total_bytes = int(content_length) if content_length else 0
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        code = resp.getcode()
+                        content_type = resp.headers.get("Content-Type", "").lower()
+                        content_length = resp.headers.get("Content-Length")
+                        total_bytes = int(content_length) if content_length else 0
 
-                    if code == 206 and existing_bytes > 0:
-                        total_bytes += existing_bytes
-                        mode = "ab"
-                    else:
-                        existing_bytes = 0
-                        mode = "wb"
+                        # Reject HTML/XML error bodies served with HTTP 200
+                        if any(t in content_type for t in ["text/html", "application/xml", "text/xml"]):
+                            raise StageError(f"Server returned non-binary content ({content_type}) instead of ISO", stage="VM_CREATE")
 
-                    downloaded = existing_bytes
-                    chunk_size = 1024 * 1024  # 1MB
-                    start_time = time.monotonic()
-                    last_log_pct = -1
+                        # If full file (code 200), verify it is large enough to be an authentic Windows ISO (> 1 GB)
+                        if code == 200 and total_bytes > 0 and total_bytes < 1024 * 1024 * 1024:
+                            raise StageError(f"Reported file size ({total_bytes / (1024**2):.1f} MB) is too small to be a Windows ISO", stage="VM_CREATE")
 
-                    with open(part_path, mode) as out_f:
-                        while True:
-                            chunk = resp.read(chunk_size)
-                            if not chunk:
-                                break
-                            out_f.write(chunk)
-                            downloaded += len(chunk)
+                        if code == 206 and existing_bytes > 0:
+                            total_bytes += existing_bytes
+                            mode = "ab"
+                        else:
+                            existing_bytes = 0
+                            mode = "wb"
 
-                            now = time.monotonic()
-                            elapsed = max(0.001, now - start_time)
-                            speed_mb = (downloaded - existing_bytes) / (1024 * 1024 * elapsed)
-                            pct = int((downloaded / total_bytes) * 100) if total_bytes > 0 else 0
+                        downloaded = existing_bytes
+                        chunk_size = 1024 * 1024  # 1MB
+                        start_time = time.monotonic()
+                        last_log_pct = -1
 
-                            if total_bytes > 0:
-                                eta_s = int((total_bytes - downloaded) / max(1, (downloaded - existing_bytes) / elapsed))
-                                eta_str = f"{eta_s // 60:02d}:{eta_s % 60:02d}"
-                                bar = render_ascii_progress_bar(downloaded, total_bytes, width=20)
-                                size_info = f"{downloaded / (1024**3):.2f}/{total_bytes / (1024**3):.2f} GB"
-                                status_line = f"\r  [ISO DL] {bar} | {size_info} | {speed_mb:.1f} MB/s | ETA: {eta_str}"
-                            else:
-                                status_line = f"\r  [ISO DL] Downloaded {downloaded / (1024**3):.2f} GB | {speed_mb:.1f} MB/s"
+                        with open(part_path, mode) as out_f:
+                            while True:
+                                chunk = resp.read(chunk_size)
+                                if not chunk:
+                                    break
+                                out_f.write(chunk)
+                                downloaded += len(chunk)
 
+                                now = time.monotonic()
+                                elapsed = max(0.001, now - start_time)
+                                speed_mb = (downloaded - existing_bytes) / (1024 * 1024 * elapsed)
+                                pct = int((downloaded / total_bytes) * 100) if total_bytes > 0 else 0
+
+                                if total_bytes > 0:
+                                    eta_s = int((total_bytes - downloaded) / max(1, (downloaded - existing_bytes) / elapsed))
+                                    eta_str = f"{eta_s // 60:02d}:{eta_s % 60:02d}"
+                                    bar = render_ascii_progress_bar(downloaded, total_bytes, width=20)
+                                    size_info = f"{downloaded / (1024**3):.2f}/{total_bytes / (1024**3):.2f} GB"
+                                    status_line = f"\r  [ISO DL] {bar} | {size_info} | {speed_mb:.1f} MB/s | ETA: {eta_str}"
+                                else:
+                                    status_line = f"\r  [ISO DL] Downloaded {downloaded / (1024**3):.2f} GB | {speed_mb:.1f} MB/s"
+
+                                try:
+                                    sys.stdout.write(status_line)
+                                    sys.stdout.flush()
+                                except Exception:
+                                    pass
+
+                                if total_bytes > 0 and (pct // 10) != (last_log_pct // 10):
+                                    last_log_pct = pct
+                                    logger.info(f"ISO Download progress: {pct}% ({downloaded / (1024**3):.2f} GB / {total_bytes / (1024**3):.2f} GB) @ {speed_mb:.1f} MB/s")
+
+                        print("")
+                        if os.path.isfile(part_path) and os.path.getsize(part_path) > 1024 * 1024 * 1024:
+                            success = True
+                            break
+                        else:
+                            # Not a complete or valid ISO
+                            logger.warning("Download stream completed but size is too small. Resetting part file...")
+                            if os.path.isfile(part_path):
+                                try:
+                                    os.remove(part_path)
+                                except Exception:
+                                    pass
+                            break
+
+                except urllib.error.HTTPError as he:
+                    last_error = f"HTTP Error {he.code}: {he.reason}"
+                    if he.code in (416, 400) and existing_bytes > 0:
+                        logger.warning(f"Server rejected byte range (HTTP {he.code}). Deleting partial download and restarting from byte 0...")
+                        if os.path.isfile(part_path):
                             try:
-                                sys.stdout.write(status_line)
-                                sys.stdout.flush()
+                                os.remove(part_path)
                             except Exception:
                                 pass
+                        continue  # retry next pass from offset 0
+                    logger.warning(f"Download attempt via urllib failed: {last_error}")
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                    logger.warning(f"Download attempt via urllib failed: {e}")
+                    break
 
-                            if total_bytes > 0 and (pct // 10) != (last_log_pct // 10):
-                                last_log_pct = pct
-                                logger.info(f"ISO Download progress: {pct}% ({downloaded / (1024**3):.2f} GB / {total_bytes / (1024**3):.2f} GB) @ {speed_mb:.1f} MB/s")
+            if success:
+                break
 
-                    print("")
+            # Fallback to curl if installed
+            if self._cmd.run(["which", "curl"]).success:
+                logger.info("Falling back to system curl...")
+                curl_cmd = [
+                    "curl", "-f", "-L", "--retry", "3", "--retry-delay", "5",
+                    "-o", part_path,
+                    "--user-agent", headers_base["User-Agent"],
+                ]
+                if os.path.isfile(part_path) and os.path.getsize(part_path) > 1024 * 1024:
+                    curl_cmd.extend(["-C", "-"])
+                curl_cmd.append(url)
+
+                res = self._cmd.run(curl_cmd, timeout=7200, live_output=True)
+                if not res.success and (res.exit_code == 33 or res.exit_code == 22):
+                    logger.warning(f"Curl failed with exit code {res.exit_code}. Resetting partial file and retrying from byte 0...")
+                    if os.path.isfile(part_path):
+                        try:
+                            os.remove(part_path)
+                        except Exception:
+                            pass
+                    retry_cmd = [
+                        "curl", "-f", "-L", "--retry", "3", "--retry-delay", "5",
+                        "-o", part_path,
+                        "--user-agent", headers_base["User-Agent"],
+                        url
+                    ]
+                    res = self._cmd.run(retry_cmd, timeout=7200, live_output=True)
+
+                if res.success and os.path.isfile(part_path) and os.path.getsize(part_path) > 1024 * 1024 * 1024:
                     success = True
                     break
 
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"Download attempt via urllib failed: {e}")
-                # Fallback to curl if installed
-                if self._cmd.run(["which", "curl"]).success:
-                    logger.info("Falling back to system curl...")
-                    curl_cmd = ["curl", "-L", "-C", "-", "-o", part_path, "--user-agent", "Mozilla/5.0", url]
-                    res = self._cmd.run(curl_cmd, timeout=3600, live_output=True)
-                    if res.success and os.path.isfile(part_path) and os.path.getsize(part_path) > 500 * 1024 * 1024:
-                        success = True
-                        break
-
         if success and os.path.isfile(part_path):
             file_size = os.path.getsize(part_path)
-            if file_size > 500 * 1024 * 1024:
+            if file_size > 1024 * 1024 * 1024:
                 if os.path.isfile(dest_path):
                     os.remove(dest_path)
                 os.rename(part_path, dest_path)
                 logger.info(f"Successfully downloaded {edition_name} to {dest_path} ({file_size / (1024**3):.2f} GB)")
                 self._state.register_resource("iso", dest_path, ResourceOwnership.CREATED_BY_INSTALLER)
                 return dest_path
+
+        # If we reached here without success, ensure corrupted/stale part_path is discarded
+        if os.path.isfile(part_path) and os.path.getsize(part_path) < 1024 * 1024 * 1024:
+            try:
+                os.remove(part_path)
+            except Exception:
+                pass
 
         raise StageError(
             f"Failed to download {edition_name}: {last_error}. "
@@ -2240,7 +2332,7 @@ drop = off
     def _is_blocking_failure(self, stage_name: str) -> bool:
         """Determine if a stage failure blocks further progress."""
         blocking = {
-            "PREFLIGHT", "KVM", "LIBVIRT", "CAPE_REPOSITORY",
+            "PREFLIGHT", "KVM", "LIBVIRT", "CAPE_REPOSITORY", "VM_CREATE",
         }
         return stage_name in blocking
 

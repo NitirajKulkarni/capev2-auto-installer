@@ -69,6 +69,23 @@ class TestCLI(unittest.TestCase):
         self.assertTrue(args.full_reset)
 
 
+    def test_windows_edition_args(self):
+        args1 = self.parser.parse_args(["--windows-edition", "win11_Eval"])
+        self.assertEqual(args1.windows_edition, "win11_eval")
+
+        args2 = self.parser.parse_args(["--windows-edition", "Win10_EVAL"])
+        self.assertEqual(args2.windows_edition, "win10_eval")
+
+        args3 = self.parser.parse_args(["--windows-edition", "win11"])
+        self.assertEqual(args3.windows_edition, "win11_eval")
+
+        args4 = self.parser.parse_args(["--windows-edition", "win10"])
+        self.assertEqual(args4.windows_edition, "win10_eval")
+
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["--windows-edition", "invalid_os"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

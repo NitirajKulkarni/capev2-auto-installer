@@ -106,8 +106,8 @@ class DiagnosticsEngine:
             result.severity = "critical"
             result.symptoms.append(f"Unsupported architecture: {arch}")
 
-        supported_versions = ["24.04", "22.04"]
-        if version_id not in supported_versions:
+        supported_versions = ["26.04", "24.04", "22.04", "24.10"]
+        if version_id not in supported_versions and not version_id.startswith("2"):
             result.status = HealthStatus.WARN.value
             result.severity = "medium"
             result.symptoms.append(f"Ubuntu {version_id} is not a primary target")
