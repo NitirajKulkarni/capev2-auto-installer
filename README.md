@@ -63,12 +63,19 @@ sudo ./install.sh --clean-install
 ### 3. Automatic Windows Evaluation ISO Download
 No need to manually find, download, or transfer multi-gigabyte ISOs. The installer streams official Microsoft Evaluation ISOs directly from Microsoft's CDN with live speed and resume support:
 ```bash
-# Windows 10 Enterprise Evaluation (Recommended for malware analysis):
+# Windows 10 Enterprise Evaluation (Recommended - gold standard for malware analysis & nested VMs):
 sudo ./install.sh --auto-download-iso
 
-# Windows 11 Enterprise Evaluation (UEFI + TPM emulator):
-sudo ./install.sh --windows-edition win11_eval --auto-download-iso
+# Or with clean reinstallation:
+sudo ./clean-install.sh --windows-edition win10_eval --auto-download-iso
+
+# Windows 11 Enterprise Evaluation:
+sudo ./clean-install.sh --windows-edition win11_eval --auto-download-iso
 ```
+
+> [!TIP]
+> **Running inside VirtualBox or VMware?**
+> We strongly recommend **`win10_eval`** (the default). Windows 10 Enterprise Evaluation boots in standard BIOS mode and uses ~3.5 GB RAM, avoiding VirtualBox nested SMM/TPM crashes and host memory exhaustion. The built-in **Resource Guard** automatically scales memory and vCPUs so your Ubuntu host retains plenty of RAM.
 
 ### 4. Resume After Interruption or Reboot
 If host updates or kernel drivers require a system reboot, simply resume without losing progress:

@@ -75,8 +75,15 @@ enabled = false
 
         win11 = WINDOWS_EVAL_CATALOG["win11_eval"]
         self.assertEqual(win11["os_variant"], "win11")
-        self.assertTrue(win11["needs_uefi"])
+        self.assertFalse(win11["needs_uefi"])
         self.assertTrue(len(win11["urls"]) >= 2)
+
+    def test_calculate_safe_vm_resources(self):
+        safe_mem, safe_cpus, _ = self.orchestrator._calculate_safe_vm_resources(8192, 4)
+        self.assertLessEqual(safe_mem, 4608)
+        self.assertGreaterEqual(safe_mem, 2048)
+        self.assertGreaterEqual(safe_cpus, 1)
+        self.assertLessEqual(safe_cpus, max(1, (os.cpu_count() or 2) // 2))
 
     def test_tiny11_strictly_prohibited(self):
         from cape_auto.orchestrator import validate_iso_policy

@@ -56,10 +56,10 @@ WINDOWS_EVAL_CATALOG = {
         "edition_label": "Windows 11 Enterprise Eval",
         "default_filename": "win11-enterprise-eval.iso",
         "os_variant": "win11",
-        "min_disk_gb": 80,
-        "recommended_ram_mb": 8192,
-        "recommended_vcpus": 4,
-        "needs_uefi": True,
+        "min_disk_gb": 60,
+        "recommended_ram_mb": 3584,
+        "recommended_vcpus": 2,
+        "needs_uefi": False,
         "urls": [
             "https://go.microsoft.com/fwlink/?linkid=2270353",
             "https://software-static.download.prss.microsoft.com/dbazure/998969d5-f34g-4e03-ac9d-1f9786c66749/26100.1742.240906-0331.ge_release_svc_refresh_CLIENT_IOT_LTSC_EVAL_x64FRE_en-us.iso",
@@ -1936,6 +1936,70 @@ drop = off
         self._state.register_resource("iso", iso_path, ResourceOwnership.CREATED_BY_INSTALLER)
         return iso_path
 
+    def _calculate_safe_vm_resources(self, req_memory_mb: int, req_vcpus: int) -> tuple[int, int, bool]:
+        """
+        Dynamically calculate safe memory and vCPUs for the analysis VM.
+        Prevents host Out-Of-Memory (OOM) crashes and CPU starvation, especially
+        when running inside nested hypervisors (VirtualBox, VMware, KVM).
+        Returns (safe_memory_mb, safe_vcpus, is_nested).
+        """
+        host_total_mb = 8192
+        try:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        host_total_mb = int(line.split()[1]) // 1024
+                        break
+        except Exception:
+            pass
+
+        host_cpus = os.cpu_count() or 2
+
+        # Detect nested virtualization (VirtualBox, VMware, KVM)
+        is_nested = False
+        hypervisor_name = "baremetal"
+        try:
+            virt_res = self._cmd.run(["systemd-detect-virt"])
+            if virt_res.success and virt_res.stdout.strip() and virt_res.stdout.strip() != "none":
+                is_nested = True
+                hypervisor_name = virt_res.stdout.strip()
+        except Exception:
+            pass
+
+        # Host OS (Ubuntu) requires at least 4.5 GB of RAM to run libvirt, MongoDB,
+        # uv python, CAPE services, and kernel buffers safely without OOM thrashing.
+        safe_max_mem = max(2048, host_total_mb - 4608)
+
+        # In nested hypervisors (e.g. VirtualBox with ~9-10 GB RAM), cap guest RAM at 3584 MB
+        if is_nested and host_total_mb < 16384:
+            safe_max_mem = min(safe_max_mem, 3584)
+
+        safe_mem = min(req_memory_mb, safe_max_mem)
+        safe_mem = max(2048, safe_mem)
+
+        # CPU allocation: Never starve the host. Cap guest vCPUs to at most half of host CPUs
+        safe_cpus = max(1, min(req_vcpus, host_cpus // 2))
+
+        if is_nested:
+            logger.info(
+                f"[NESTED VIRT] Detected nested hypervisor '{hypervisor_name}'. "
+                f"Host RAM: {host_total_mb} MB, Host CPUs: {host_cpus}."
+            )
+
+        if safe_mem < req_memory_mb:
+            logger.warning(
+                f"[RESOURCE GUARD] Sized VM memory from {req_memory_mb} MB to {safe_mem} MB "
+                f"to prevent host OOM crash (Host RAM: {host_total_mb} MB)."
+            )
+
+        if safe_cpus < req_vcpus:
+            logger.info(
+                f"[RESOURCE GUARD] Sized VM vCPUs from {req_vcpus} to {safe_cpus} "
+                f"to preserve host responsiveness (Host CPUs: {host_cpus})."
+            )
+
+        return safe_mem, safe_cpus, is_nested
+
     def _stage_vm_create(self) -> None:
         """Create analysis VM with Windows 10/11 Enterprise Evaluation."""
         if not self._config.get_bool("guest.enabled"):
@@ -1945,15 +2009,18 @@ drop = off
         vm_name = self._config.get_str("guest.name", "cape-win")
         iso_path = self._config.get_str("guest.iso_path")
         disk_path = self._config.get_str("guest.disk_path")
-        disk_size = self._config.get_int("guest.disk_size_gb", 80)
-        memory = self._config.get_int("guest.memory_mb", 8192)
-        vcpus = self._config.get_int("guest.vcpus", 4)
+        disk_size = self._config.get_int("guest.disk_size_gb", 60)
+        memory = self._config.get_int("guest.memory_mb", 3584)
+        vcpus = self._config.get_int("guest.vcpus", 2)
         net_name = self._config.get_str("network.libvirt_network_name", "cape-analysis")
         edition = self._config.get_str("guest.windows_edition", "win10_eval").lower()
         auto_download = self._config.get_bool("guest.auto_download_iso", True)
         custom_url = self._config.get_str("guest.eval_iso_url", "").strip()
         disk_bus = self._config.get_str("guest.disk_bus", "sata")
         net_model = self._config.get_str("guest.network_model", "e1000e")
+
+        # Dynamically size memory and vCPUs to host capacity and nested safety
+        memory, vcpus, is_nested = self._calculate_safe_vm_resources(memory, vcpus)
 
         # STRICT PROHIBITION CHECK: Reject Tiny11 or stripped builds
         validate_iso_policy(iso_path)
@@ -2021,9 +2088,15 @@ drop = off
 
         # Configure virt-install
         os_variant = eval_info["os_variant"]
-        use_uefi = self._config.get_str("guest.uefi", "").lower()
-        if not use_uefi:
-            use_uefi = "true" if eval_info["needs_uefi"] else "false"
+
+        # In nested virtualization, enforce BIOS boot to prevent VirtualBox/nested SMM crashes
+        if is_nested:
+            use_uefi = "false"
+            logger.info("[NESTED VIRT] Enforcing standard BIOS boot (avoids nested SMM/TPM hypervisor crash).")
+        else:
+            use_uefi = self._config.get_str("guest.uefi", "").lower()
+            if not use_uefi:
+                use_uefi = "true" if eval_info["needs_uefi"] else "false"
 
         install_cmd = [
             "virt-install",
@@ -2036,13 +2109,12 @@ drop = off
             "--network", f"network={net_name},model={net_model}",
             "--graphics", "vnc,listen=127.0.0.1",
             "--os-variant", os_variant,
+            "--events", "on_reboot=restart",
             "--noautoconsole",
         ]
 
-        if use_uefi in ("true", "1", "yes"):
+        if use_uefi in ("true", "1", "yes") and not is_nested:
             install_cmd.extend(["--boot", "uefi"])
-            if edition == "win11_eval":
-                install_cmd.extend(["--features", "smm=on", "--tpm", "backend.type=emulator,model=tpm-tis"])
         else:
             install_cmd.extend(["--boot", "hd,cdrom"])
 

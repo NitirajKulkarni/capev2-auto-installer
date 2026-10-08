@@ -79,12 +79,12 @@ iso_path = ""
 eval_iso_url = ""
 # Path for virtual disk
 disk_path = "/var/lib/libvirt/images/cape-win.qcow2"
-# Disk size in GB (Win10: 60-80GB, Win11: 80-100GB)
-disk_size_gb = 80
-# RAM in MB (Win10: 4096-8192MB, Win11: 8192MB+)
-memory_mb = 8192
-# Virtual CPUs
-vcpus = 4
+# Disk size in GB (Win10: 60GB, Win11: 60-80GB)
+disk_size_gb = 60
+# RAM in MB (Safe default: 3584MB for 8-16GB hosts; dynamic guard scales automatically)
+memory_mb = 3584
+# Virtual CPUs (Safe default: 2 vCPUs; preserves host responsiveness)
+vcpus = 2
 # Snapshot name for clean state
 snapshot_name = "cape-clean"
 # Use UEFI boot ("" = auto-detect based on Windows edition, "true", or "false")
