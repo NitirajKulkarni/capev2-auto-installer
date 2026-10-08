@@ -2281,53 +2281,18 @@ drop = off
                 except OSError:
                     pass
 
-            # Query CPU time from libvirt quietly
-            cpu_time_str = "active"
-            dominfo = self._cmd.run_capture(["virsh", "dominfo", vm_name], quiet=True)
-            cpu_match = re.search(r"CPU time:\s*([^\n]+)", dominfo)
-            if cpu_match:
-                cpu_time_str = cpu_match.group(1).strip()
-
-            # Determine human-friendly setup phase based on disk size and elapsed time
-            if disk_gb < 1.5 and elapsed < 180:
-                phase_num = "Phase 1/4"
-                phase_title = "WinPE Boot & Disk Partitioning"
-                phase_desc = "Loading setup files from OEMDRV disc; formatting NTFS boot partition."
-            elif disk_gb < 8.5:
-                phase_num = "Phase 2/4"
-                phase_title = "Expanding & Writing Windows Files"
-                phase_desc = "Unpacking Windows system image (install.wim / install.esd) to C:\\."
-            elif disk_gb < 13.0:
-                phase_num = "Phase 3/4"
-                phase_title = "Device Configuration & Driver Setup"
-                phase_desc = "Detecting virtual devices (e1000e NIC, SATA disk) & applying registry."
-            else:
-                phase_num = "Phase 4/4"
-                phase_title = "OOBE Specialization & FirstLogon Agent Startup"
-                phase_desc = "Booting desktop, running setup-agent.ps1, binding port 8000."
-
-            # Estimate progress percentage (typical zero-touch setup completes in ~20-22 min)
+            # Estimate progress percentage
             pct = min(96, max(5, int((elapsed / (22 * 60)) * 100)))
-            pbar = render_ascii_progress_bar(pct, 20)
 
-            # Display rich progress dashboard every 60 seconds (1 minute)
+            # Display concise progress every 60 seconds (1 minute)
             mins_elapsed = elapsed // 60
             if mins_elapsed != last_logged_min:
                 last_logged_min = mins_elapsed
-                logger.info("┌" + "─" * 76 + "┐")
-                logger.info(f"│ 🪟 WINDOWS AUTOMATED UNATTENDED SETUP PROGRESS{' ' * (76 - 47)}│")
-                logger.info("├" + "─" * 76 + "┤")
-                logger.info(f"│ Target VM:     {vm_name:<60}│")
-                logger.info(f"│ Progress:      {pbar} {pct:>2}% | Elapsed: {elapsed_str}/{timeout_minutes}m{' ' * (76 - (33 + len(elapsed_str) + len(str(timeout_minutes))))}│")
-                logger.info(f"│ Current Phase: [{phase_num}] {phase_title:<50}│")
-                logger.info(f"│ What it's doing: {phase_desc:<56}│")
-                disk_str = f"{disk_gb:.1f} GB allocated{disk_growth_rate}"
-                logger.info(f"│ Virtual Disk:  {disk_str:<60}│")
-                logger.info(f"│ VM State:      {dom_state} (CPU time: {cpu_time_str}){' ' * (76 - (28 + len(dom_state) + len(cpu_time_str)))}│")
-                logger.info(f"│ Agent Probe:   {agent_url} (Awaiting FirstLogon){' ' * (76 - (41 + len(agent_url)))}│")
-                logger.info("├" + "─" * 76 + "┤")
-                logger.info(f"│ 💡 Live GUI:   Run 'virt-viewer {vm_name}' to watch the Windows screen live!{' ' * (76 - (63 + len(vm_name)))}│")
-                logger.info("└" + "─" * 76 + "┘")
+                disk_str = f" | Disk: {disk_gb:.1f}G{disk_growth_rate}" if disk_gb > 0 else ""
+                logger.info(
+                    f"Windows setup in progress: Elapsed {elapsed_str}/{timeout_minutes}m ({pct}%){disk_str} | "
+                    f"VM: {dom_state} | Awaiting guest agent..."
+                )
 
             time.sleep(poll_interval)
 
