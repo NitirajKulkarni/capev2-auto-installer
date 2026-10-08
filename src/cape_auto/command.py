@@ -94,6 +94,7 @@ class CommandRunner:
         shell: bool = False,
         input_data: Optional[str] = None,
         live_output: bool = False,
+        quiet: bool = False,
     ) -> CommandResult:
         """
         Execute a command with full instrumentation.
@@ -109,6 +110,7 @@ class CommandRunner:
             shell: Use shell execution (only when necessary, e.g. pipes)
             input_data: Data to send to stdin
             live_output: Stream stdout lines in real time to logger
+            quiet: If True, log EXEC and EXIT at DEBUG level instead of INFO
         """
         from cape_auto.exceptions import CommandError
 
@@ -122,7 +124,10 @@ class CommandRunner:
             cmd_str = command
 
         log_cmd = "[SENSITIVE COMMAND]" if sensitive else self._redact_command(cmd_str)
-        logger.info(f"EXEC: {log_cmd}")
+        if quiet:
+            logger.debug(f"EXEC: {log_cmd}")
+        else:
+            logger.info(f"EXEC: {log_cmd}")
         if cwd:
             logger.debug(f"  CWD: {cwd}")
 
@@ -224,7 +229,10 @@ class CommandRunner:
         self._history.append(result)
 
         # Log result
-        logger.info(f"  EXIT: {exit_code} ({duration:.1f}s)")
+        if quiet:
+            logger.debug(f"  EXIT: {exit_code} ({duration:.1f}s)")
+        else:
+            logger.info(f"  EXIT: {exit_code} ({duration:.1f}s)")
         if exit_code != 0 and not sensitive:
             if stderr:
                 # Limit stderr logging

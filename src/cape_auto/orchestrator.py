@@ -2214,21 +2214,38 @@ drop = off
         poll_interval = 10
         start_time = time.monotonic()
         last_logged_min = -1
+        last_disk_bytes = 0
+        disk_path = self._config.get_str("guest.disk_path")
+        if not disk_path or not os.path.isfile(disk_path):
+            disk_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
 
         import urllib.request
         import urllib.error
+        import re
+
+        logger.info("═" * 78)
+        logger.info("  STARTING ZERO-TOUCH AUTOMATED WINDOWS INSTALLATION")
+        logger.info(f"  Target VM:       {vm_name}")
+        logger.info(f"  Agent Endpoint:  {agent_url}")
+        logger.info(f"  Timeout:         {timeout_minutes} minutes (normal setup takes ~18-24 minutes)")
+        logger.info("  💡 Live Display:  To watch the Windows GUI screen in real-time, run:")
+        logger.info(f"                   virt-viewer {vm_name}  (or: virt-manager)")
+        logger.info("═" * 78)
 
         while (time.monotonic() - start_time) < timeout_seconds:
             elapsed = int(time.monotonic() - start_time)
             elapsed_str = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
 
-            # Check VM state in libvirt
-            dom_state = self._cmd.run_capture(["virsh", "domstate", vm_name]).strip()
+            # Check VM state in libvirt quietly
+            dom_state = self._cmd.run_capture(["virsh", "domstate", vm_name], quiet=True).strip()
 
             # If VM shut down during setup reboot and didn't auto-start, restart it
             if dom_state in ("shut off", "shut down", "pmsuspended"):
-                logger.info(f"VM '{vm_name}' is in '{dom_state}' state, restarting...")
-                self._cmd.run(["virsh", "start", vm_name])
+                logger.info(
+                    f"[AUTOMATED REBOOT] VM '{vm_name}' rebooted during Windows setup ({dom_state}). "
+                    "Resuming execution..."
+                )
+                self._cmd.run(["virsh", "start", vm_name], quiet=True)
                 time.sleep(5)
                 continue
 
@@ -2246,21 +2263,78 @@ drop = off
                 logger.info("═" * 78)
                 logger.info(f"  AUTOMATED WINDOWS INSTALLATION COMPLETE in {elapsed_str}!")
                 logger.info(f"  Guest agent detected online and responsive at {agent_url}")
+                logger.info("  Unattended setup succeeded. Moving to clean snapshot creation.")
                 logger.info("═" * 78)
                 return
 
-            # Display live progress every 2 minutes or upon state change
+            # Gather telemetry: disk growth & CPU activity
+            disk_gb = 0.0
+            disk_growth_rate = ""
+            if os.path.isfile(disk_path):
+                try:
+                    cur_disk_bytes = os.path.getsize(disk_path)
+                    disk_gb = cur_disk_bytes / (1024 ** 3)
+                    if last_disk_bytes > 0 and cur_disk_bytes > last_disk_bytes:
+                        rate_mb_m = ((cur_disk_bytes - last_disk_bytes) / 1024 / 1024) / (poll_interval / 60)
+                        disk_growth_rate = f" (+{rate_mb_m:.0f} MB/min)"
+                    last_disk_bytes = cur_disk_bytes
+                except OSError:
+                    pass
+
+            # Query CPU time from libvirt quietly
+            cpu_time_str = "active"
+            dominfo = self._cmd.run_capture(["virsh", "dominfo", vm_name], quiet=True)
+            cpu_match = re.search(r"CPU time:\s*([^\n]+)", dominfo)
+            if cpu_match:
+                cpu_time_str = cpu_match.group(1).strip()
+
+            # Determine human-friendly setup phase based on disk size and elapsed time
+            if disk_gb < 1.5 and elapsed < 180:
+                phase_num = "Phase 1/4"
+                phase_title = "WinPE Boot & Disk Partitioning"
+                phase_desc = "Loading setup files from OEMDRV disc; formatting NTFS boot partition."
+            elif disk_gb < 8.5:
+                phase_num = "Phase 2/4"
+                phase_title = "Expanding & Writing Windows Files"
+                phase_desc = "Unpacking Windows system image (install.wim / install.esd) to C:\\."
+            elif disk_gb < 13.0:
+                phase_num = "Phase 3/4"
+                phase_title = "Device Configuration & Driver Setup"
+                phase_desc = "Detecting virtual devices (e1000e NIC, SATA disk) & applying registry."
+            else:
+                phase_num = "Phase 4/4"
+                phase_title = "OOBE Specialization & FirstLogon Agent Startup"
+                phase_desc = "Booting desktop, running setup-agent.ps1, binding port 8000."
+
+            # Estimate progress percentage (typical zero-touch setup completes in ~20-22 min)
+            pct = min(96, max(5, int((elapsed / (22 * 60)) * 100)))
+            pbar = render_ascii_progress_bar(pct, 20)
+
+            # Display rich progress dashboard every 60 seconds (1 minute)
             mins_elapsed = elapsed // 60
-            if mins_elapsed != last_logged_min and (mins_elapsed % 2 == 0):
+            if mins_elapsed != last_logged_min:
                 last_logged_min = mins_elapsed
-                logger.info(f"Windows automated setup in progress: Elapsed {elapsed_str}/{timeout_minutes}m | VM: {dom_state} | Awaiting guest agent...")
+                logger.info("┌" + "─" * 76 + "┐")
+                logger.info(f"│ 🪟 WINDOWS AUTOMATED UNATTENDED SETUP PROGRESS{' ' * (76 - 47)}│")
+                logger.info("├" + "─" * 76 + "┤")
+                logger.info(f"│ Target VM:     {vm_name:<60}│")
+                logger.info(f"│ Progress:      {pbar} {pct:>2}% | Elapsed: {elapsed_str}/{timeout_minutes}m{' ' * (76 - (33 + len(elapsed_str) + len(str(timeout_minutes))))}│")
+                logger.info(f"│ Current Phase: [{phase_num}] {phase_title:<50}│")
+                logger.info(f"│ What it's doing: {phase_desc:<56}│")
+                disk_str = f"{disk_gb:.1f} GB allocated{disk_growth_rate}"
+                logger.info(f"│ Virtual Disk:  {disk_str:<60}│")
+                logger.info(f"│ VM State:      {dom_state} (CPU time: {cpu_time_str}){' ' * (76 - (28 + len(dom_state) + len(cpu_time_str)))}│")
+                logger.info(f"│ Agent Probe:   {agent_url} (Awaiting FirstLogon){' ' * (76 - (41 + len(agent_url)))}│")
+                logger.info("├" + "─" * 76 + "┤")
+                logger.info(f"│ 💡 Live GUI:   Run 'virt-viewer {vm_name}' to watch the Windows screen live!{' ' * (76 - (63 + len(vm_name)))}│")
+                logger.info("└" + "─" * 76 + "┘")
 
             time.sleep(poll_interval)
 
         # Timeout reached
         logger.error(f"Timed out waiting for automated Windows installation after {timeout_minutes} minutes.")
         raise StageError(
-            f"Windows automated installation timed out for '{vm_name}'. Check VM console using: virt-manager or virsh console {vm_name}",
+            f"Windows automated installation timed out for '{vm_name}'. Check VM console using: virt-viewer {vm_name} or virt-manager",
             stage="VM_INSTALL",
         )
 
