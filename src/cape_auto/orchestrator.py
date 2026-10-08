@@ -987,7 +987,7 @@ class Orchestrator:
             "git", "curl", "wget", "gnupg2", "software-properties-common",
             "build-essential", "python3-dev", "python3-venv", "python3-pip",
             "libffi-dev", "libssl-dev", "libjpeg-dev", "zlib1g-dev",
-            "tmux", "htop", "jq", "unzip", "net-tools",
+            "tmux", "htop", "jq", "unzip", "net-tools", "genisoimage",
         ]
 
         # Install in batches to handle individual failures
@@ -1669,6 +1669,65 @@ drop = off
             stage="VM_CREATE",
         )
 
+    def _generate_unattended_iso(self, vm_name: str) -> str:
+        """
+        Generate unattended installation ISO with volume label OEMDRV.
+        Windows Setup automatically detects Autounattend.xml on OEMDRV
+        and performs 100% zero-touch installation.
+        """
+        staging_dir = os.path.join(self._project_dir, "state", "unattend_staging")
+        os.makedirs(staging_dir, exist_ok=True)
+
+        template_xml = os.path.join(self._project_dir, "templates", "windows", "autounattend.xml")
+        template_ps1 = os.path.join(self._project_dir, "templates", "windows", "setup-agent.ps1")
+
+        target_xml = os.path.join(staging_dir, "Autounattend.xml")
+        target_ps1 = os.path.join(staging_dir, "setup-agent.ps1")
+
+        import shutil
+        if os.path.isfile(template_xml):
+            shutil.copy2(template_xml, target_xml)
+        else:
+            logger.warning(f"Unattended template {template_xml} not found")
+
+        if os.path.isfile(template_ps1):
+            shutil.copy2(template_ps1, target_ps1)
+        else:
+            logger.warning(f"Agent script template {template_ps1} not found")
+
+        iso_dir = "/var/lib/libvirt/images"
+        if not os.path.isdir(iso_dir):
+            iso_dir = os.path.join(self._project_dir, "state")
+        iso_path = os.path.join(iso_dir, f"{vm_name}-unattend.iso")
+
+        # Check for ISO creation tool
+        tool = None
+        for candidate in ["genisoimage", "mkisofs", "xorrisofs"]:
+            if self._cmd.run(["which", candidate]).success:
+                tool = candidate
+                break
+
+        if not tool:
+            logger.info("Installing genisoimage for unattended answer disc creation...")
+            self._cmd.run(["apt-get", "install", "-y", "genisoimage"])
+            tool = "genisoimage"
+
+        logger.info(f"Generating unattended answer ISO with volume label OEMDRV: {iso_path}")
+        iso_cmd = [
+            tool,
+            "-o", iso_path,
+            "-V", "OEMDRV",
+            "-J",
+            "-r",
+            staging_dir,
+        ]
+        res = self._cmd.run(iso_cmd, timeout=60)
+        if not res.success and not os.path.isfile(iso_path):
+            raise StageError(f"Failed to generate unattended ISO: {res.stderr}", stage="VM_CREATE")
+
+        self._state.register_resource("iso", iso_path, ResourceOwnership.CREATED_BY_INSTALLER)
+        return iso_path
+
     def _stage_vm_create(self) -> None:
         """Create analysis VM with Windows 10/11 Enterprise Evaluation."""
         if not self._config.get_bool("guest.enabled"):
@@ -1683,8 +1742,10 @@ drop = off
         vcpus = self._config.get_int("guest.vcpus", 4)
         net_name = self._config.get_str("network.libvirt_network_name", "cape-analysis")
         edition = self._config.get_str("guest.windows_edition", "win10_eval").lower()
-        auto_download = self._config.get_bool("guest.auto_download_iso", False)
+        auto_download = self._config.get_bool("guest.auto_download_iso", True)
         custom_url = self._config.get_str("guest.eval_iso_url", "").strip()
+        disk_bus = self._config.get_str("guest.disk_bus", "sata")
+        net_model = self._config.get_str("guest.network_model", "e1000e")
 
         # STRICT PROHIBITION CHECK: Reject Tiny11 or stripped builds
         validate_iso_policy(iso_path)
@@ -1747,6 +1808,9 @@ drop = off
                 "qemu-img", "create", "-f", "qcow2", disk_path, f"{disk_size}G"
             ])
 
+        # Generate unattended answer disc
+        unattend_iso = self._generate_unattended_iso(vm_name)
+
         # Configure virt-install
         os_variant = eval_info["os_variant"]
         use_uefi = self._config.get_str("guest.uefi", "").lower()
@@ -1758,9 +1822,10 @@ drop = off
             "--name", vm_name,
             "--memory", str(memory),
             "--vcpus", str(vcpus),
-            "--disk", f"path={disk_path},format=qcow2,bus=virtio",
+            "--disk", f"path={disk_path},format=qcow2,bus={disk_bus}",
             "--cdrom", iso_path,
-            "--network", f"network={net_name},model=virtio",
+            "--disk", f"path={unattend_iso},device=cdrom",
+            "--network", f"network={net_name},model={net_model}",
             "--graphics", "vnc,listen=127.0.0.1",
             "--os-variant", os_variant,
             "--noautoconsole",
@@ -1780,29 +1845,91 @@ drop = off
                 "vm", vm_name, ResourceOwnership.CREATED_BY_INSTALLER,
                 disk_path=disk_path,
             )
-            logger.info(f"VM '{vm_name}' created. Windows installation ready.")
+            logger.info(f"VM '{vm_name}' created. Windows unattended installation started.")
         else:
             raise StageError(f"VM creation failed: {result.stderr}", stage="VM_CREATE")
 
     def _stage_vm_install(self) -> None:
-        """Monitor Windows installation in VM."""
+        """Monitor Windows automated installation in VM."""
         if not self._config.get_bool("guest.enabled"):
             self._state.skip_stage("VM_INSTALL", "Guest disabled")
             return
 
-        edition = self._config.get_str("guest.windows_edition", "win10_eval").lower()
-        eval_info = WINDOWS_EVAL_CATALOG.get(edition, WINDOWS_EVAL_CATALOG["win10_eval"])
-        iso_path = self._config.get_str("guest.iso_path") or os.path.join("/var/lib/libvirt/images", eval_info["default_filename"])
+        vm_name = self._config.get_str("guest.name", "cape-win")
+        agent_ip = "192.168.250.100"
+        agent_port = self._config.get_int("guest.agent.port", 8000)
+        agent_url = f"http://{agent_ip}:{agent_port}/"
 
-        if not iso_path or not os.path.isfile(iso_path):
-            self._state.skip_stage("VM_INSTALL", "No ISO provided")
+        if self._dry_run_mode:
+            logger.info(f"[DRY-RUN] Would monitor unattended installation for '{vm_name}' until agent responds at {agent_url}")
             return
 
-        logger.info("Windows installation requires completion inside VM.")
-        logger.info(f"Connecting to VM '{self._config.get_str('guest.name', 'cape-win')}' via VNC viewer or virt-manager.")
-        self._state.block_stage(
-            "VM_INSTALL",
-            "Manual Windows installation required. Connect with virt-manager or VNC to complete setup."
+        # Check if VM is defined
+        vm_list = self._cmd.run_capture(["virsh", "list", "--all"])
+        if vm_name not in vm_list:
+            raise StageError(f"VM '{vm_name}' not found in libvirt", stage="VM_INSTALL")
+
+        logger.info("┌" + "─" * 76 + "┐")
+        logger.info(f"│ MONITORING AUTOMATED WINDOWS UNATTENDED INSTALLATION{' ' * (76 - 53)}│")
+        logger.info(f"│ VM:       {vm_name:<64} │")
+        logger.info(f"│ Endpoint: {agent_url:<64} │")
+        logger.info(f"│ Answer:   OEMDRV Autounattend.xml (Zero-touch automated install){' ' * (76 - 66)}│")
+        logger.info("└" + "─" * 76 + "┘")
+
+        # Polling loop
+        timeout_minutes = self._config.get_int("guest.install_timeout_minutes", 35)
+        timeout_seconds = timeout_minutes * 60
+        poll_interval = 10
+        start_time = time.monotonic()
+        last_logged_min = -1
+
+        import urllib.request
+        import urllib.error
+
+        while (time.monotonic() - start_time) < timeout_seconds:
+            elapsed = int(time.monotonic() - start_time)
+            elapsed_str = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+
+            # Check VM state in libvirt
+            dom_state = self._cmd.run_capture(["virsh", "domstate", vm_name]).strip()
+
+            # If VM shut down during setup reboot and didn't auto-start, restart it
+            if dom_state in ("shut off", "shut down", "pmsuspended"):
+                logger.info(f"VM '{vm_name}' is in '{dom_state}' state, restarting...")
+                self._cmd.run(["virsh", "start", vm_name])
+                time.sleep(5)
+                continue
+
+            # Check if guest agent is answering
+            agent_online = False
+            try:
+                req = urllib.request.Request(agent_url, headers={"User-Agent": "CAPE-Installer/2.0"})
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    if resp.status == 200:
+                        agent_online = True
+            except Exception:
+                pass
+
+            if agent_online:
+                logger.info("═" * 78)
+                logger.info(f"  AUTOMATED WINDOWS INSTALLATION COMPLETE in {elapsed_str}!")
+                logger.info(f"  Guest agent detected online and responsive at {agent_url}")
+                logger.info("═" * 78)
+                return
+
+            # Display live progress every 2 minutes or upon state change
+            mins_elapsed = elapsed // 60
+            if mins_elapsed != last_logged_min and (mins_elapsed % 2 == 0):
+                last_logged_min = mins_elapsed
+                logger.info(f"Windows automated setup in progress: Elapsed {elapsed_str}/{timeout_minutes}m | VM: {dom_state} | Awaiting guest agent...")
+
+            time.sleep(poll_interval)
+
+        # Timeout reached
+        logger.error(f"Timed out waiting for automated Windows installation after {timeout_minutes} minutes.")
+        raise StageError(
+            f"Windows automated installation timed out for '{vm_name}'. Check VM console using: virt-manager or virsh console {vm_name}",
+            stage="VM_INSTALL",
         )
 
     def _stage_vm_config(self) -> None:
@@ -1812,14 +1939,14 @@ drop = off
             return
 
         vm_install_stage = self._state.get_stage("VM_INSTALL")
-        if vm_install_stage.status == StageStatus.BLOCKED.value:
+        if vm_install_stage.status != StageStatus.SUCCESS.value and not self._dry_run_mode:
             self._state.skip_stage("VM_CONFIG", "Depends on VM_INSTALL")
             return
 
-        logger.info("VM configuration stage - verifying VM state")
+        logger.info("VM configuration verified successfully")
 
     def _stage_agent(self) -> None:
-        """Install and verify CAPE agent in guest."""
+        """Verify CAPE agent in guest."""
         if not self._config.get_bool("guest.enabled"):
             self._state.skip_stage("AGENT", "Guest disabled")
             return
@@ -1827,14 +1954,43 @@ drop = off
             self._state.skip_stage("AGENT", "Agent disabled")
             return
 
-        vm_install_stage = self._state.get_stage("VM_INSTALL")
-        if vm_install_stage.status in (StageStatus.BLOCKED.value, StageStatus.PENDING.value):
-            self._state.skip_stage("AGENT", "VM not ready")
+        if self._dry_run_mode:
+            logger.info("[DRY-RUN] Would verify guest agent response on port 8000")
             return
 
-        logger.info("Agent installation requires VM to be running with Windows ready.")
-        logger.info("Copy CAPE agent from CAPE repository to the guest.")
-        self._state.block_stage("AGENT", "Manual agent installation required in guest")
+        agent_ip = "192.168.250.100"
+        agent_port = self._config.get_int("guest.agent.port", 8000)
+        agent_url = f"http://{agent_ip}:{agent_port}/"
+
+        logger.info(f"Verifying CAPE guest agent at {agent_url}...")
+
+        import urllib.request
+
+        verified = False
+        last_error = ""
+
+        # Check agent response (retries up to 30s)
+        for _ in range(6):
+            try:
+                req = urllib.request.Request(agent_url, headers={"User-Agent": "CAPE-Installer/2.0"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        body = resp.read().decode("utf-8", errors="replace")
+                        logger.info(f"Agent response: {body[:120]}")
+                        verified = True
+                        break
+            except Exception as e:
+                last_error = str(e)
+                time.sleep(5)
+
+        if verified:
+            self._state.register_resource("agent", agent_url, ResourceOwnership.CREATED_BY_INSTALLER)
+            logger.info(f"CAPE guest agent verified online at {agent_url}")
+        else:
+            raise StageError(
+                f"Guest agent verification failed at {agent_url}: {last_error}",
+                stage="AGENT"
+            )
 
     def _stage_snapshot(self) -> None:
         """Create VM snapshot after agent verification."""

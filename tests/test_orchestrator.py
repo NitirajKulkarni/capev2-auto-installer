@@ -121,6 +121,59 @@ enabled = false
         self.assertIn("100%", bar_full)
         self.assertNotIn("░", bar_full)
 
+    def test_autounattend_xml_schema_and_commands(self):
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+        template_path = os.path.join(os.path.dirname(__file__), "..", "templates", "windows", "autounattend.xml")
+        self.assertTrue(os.path.isfile(template_path))
+
+        tree = ET.parse(template_path)
+        root = tree.getroot()
+        self.assertEqual(root.tag, "{urn:schemas-microsoft-com:unattend}unattend")
+
+        content = Path(template_path).read_text(encoding="utf-8")
+        self.assertIn("xmlns:wcm", content)
+        self.assertIn("BypassTPMCheck", content)
+        self.assertIn("BypassSecureBootCheck", content)
+        self.assertIn("setup-agent.ps1", content)
+        self.assertIn("FirstLogonCommands", content)
+        self.assertIn("<Username>cape</Username>", content)
+
+    def test_setup_agent_ps1_configuration(self):
+        from pathlib import Path
+        template_path = os.path.join(os.path.dirname(__file__), "..", "templates", "windows", "setup-agent.ps1")
+        self.assertTrue(os.path.isfile(template_path))
+        content = Path(template_path).read_text(encoding="utf-8")
+
+        self.assertIn("192.168.250.100", content)
+        self.assertIn("Set-MpPreference", content)
+        self.assertIn("EnableLUA", content)
+        self.assertIn("wuauserv", content)
+        self.assertIn("Set-NetFirewallProfile", content)
+        self.assertIn("http://+:8000/", content)
+        self.assertIn("start-cape-agent.bat", content)
+
+    def test_generate_unattended_iso_call(self):
+        from unittest.mock import MagicMock
+        mock_cmd = MagicMock()
+        mock_cmd.run.return_value.success = True
+        self.orchestrator._cmd = mock_cmd
+
+        tpl_dir = os.path.join(self.temp_dir.name, "templates", "windows")
+        os.makedirs(tpl_dir, exist_ok=True)
+        with open(os.path.join(tpl_dir, "autounattend.xml"), "w") as f:
+            f.write("<unattend/>")
+        with open(os.path.join(tpl_dir, "setup-agent.ps1"), "w") as f:
+            f.write("Write-Output 'Agent'")
+
+        iso_path = self.orchestrator._generate_unattended_iso("test-vm")
+        self.assertIn("test-vm-unattend.iso", iso_path)
+
+        calls = [c[0][0] for c in mock_cmd.run.call_args_list]
+        found_oemdrv = any("OEMDRV" in cmd for cmd in calls)
+        self.assertTrue(found_oemdrv)
+
 
 if __name__ == "__main__":
     unittest.main()
+

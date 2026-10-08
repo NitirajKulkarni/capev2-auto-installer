@@ -72,7 +72,7 @@ platform = "windows"
 # STRICT POLICY: Strictly NO Tiny11! Tiny11 removes Defender, ETW, WMI, and core APIs, invalidating malware analysis.
 windows_edition = "win10_eval"
 # Automatically download official Microsoft Enterprise Evaluation ISO if iso_path is empty
-auto_download_iso = false
+auto_download_iso = true
 # Path to local Windows ISO (leave empty if using auto_download_iso)
 iso_path = ""
 # Custom/mirror URL for Windows Evaluation ISO download (optional; defaults to official Microsoft CDN)
@@ -89,6 +89,12 @@ vcpus = 4
 snapshot_name = "cape-clean"
 # Use UEFI boot ("" = auto-detect based on Windows edition, "true", or "false")
 uefi = ""
+# Disk bus type: "sata" (recommended for out-of-the-box Windows install without 3rd party drivers) or "virtio"
+disk_bus = "sata"
+# Network model: "e1000e" (recommended for out-of-the-box Windows install without 3rd party drivers) or "virtio"
+network_model = "e1000e"
+# Installation timeout in minutes for unattended Windows setup
+install_timeout_minutes = 35
 
 [guest.agent]
 # Enable CAPE agent installation
