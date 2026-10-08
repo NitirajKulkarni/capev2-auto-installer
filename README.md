@@ -75,30 +75,71 @@ yielding an end-to-end operational CAPEv2 sandbox with zero unnecessary drama.
 
 ---
 
-## ⚡ Quick Start
+## 🖥️ Supported Host Environments
 
-### 1. Clone & Enter Directory
+The installer is engineered to automatically detect and adapt to both **physical bare-metal servers** and **virtual machine hosts**.
+
+### 1. Operating System Compatibility
+| Platform | Version | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **Ubuntu 24.04 LTS** (*Noble Numbat*) | 24.04.x | **Recommended / Primary** | Kernel 6.8+, native Netplan & systemd v255, Python 3.12 default. |
+| **Ubuntu 22.04 LTS** (*Jammy Jellyfish*) | 22.04.x | **Fully Supported** | Kernel 5.15+, Python 3.10 default (native bootstrap fallback). |
+
+### 2. Bare Metal vs. Virtual Machine (Nested Virtualization)
+- **Bare-Metal Physical Host**:
+  Hardware virtualization (`vmx` on Intel, `svm` on AMD) must be enabled in the BIOS/UEFI.
+- **Ubuntu Host inside a Virtual Machine (Nested Virtualization)**:
+  Because CAPEv2 provisions analysis VMs using KVM inside your Ubuntu host, the parent hypervisor must expose hardware virtualization to the Ubuntu VM.
+
+#### Hypervisor Configuration Guide for Nested Virtualization
+| Hypervisor | Configuration Steps |
+| :--- | :--- |
+| **VMware Workstation / Player / Fusion** | Power off VM &rarr; *Virtual Machine Settings* &rarr; *Processors* &rarr; Check **"Virtualize Intel VT-x/EPT or AMD-V/RVI"**. |
+| **Oracle VirtualBox** | Power off VM &rarr; *Settings* &rarr; *System* &rarr; *Processor* &rarr; Check **"Enable Nested VT-x/AMD-V"**. |
+| **Proxmox VE** | Select VM &rarr; *Hardware* &rarr; *Processors* &rarr; Set CPU Type to **`host`**. |
+| **Microsoft Hyper-V** | In Administrator PowerShell on Windows: <br>`Set-VMProcessor -VMName "<Your-Ubuntu-VM>" -ExposeVirtualizationExtensions $true` |
+| **KVM / QEMU (Parent Host)** | Start VM with `-cpu host` or configure `<cpu mode='host-passthrough'/>` in libvirt XML. |
+| **Cloud Instances (AWS / Azure / GCP)** | Must use instances with nested virtualization enabled (e.g. AWS `*.metal`, Azure `Dv3`/`Dv4`/`Dv5` series). |
+
+---
+
+## ⚡ Quick Start & Verification Workflow
+
+### Step 1: Clone Repository & Ensure Permissions
 ```bash
 git clone https://github.com/NitirajKulkarni/capev2-auto-installer.git
 cd capev2-auto-installer
+
+# Ensure all wrapper scripts have execution permissions
+chmod +x *.sh
 ```
 
-### 2. Inspect & Dry-Run (Preview Actions)
+### Step 2: Validate Environment (Zero Risk / Non-Destructive)
+Before installing, run the non-destructive verification sequence to audit your host:
 ```bash
-# Preview all 24 planned actions without modifying host state
-sudo ./install.sh --dry-run
+# 1. Verify internal framework engines (command runner, redaction, state)
+sudo ./install.sh --self-test
 
-# Run non-destructive preflight capability audit
+# 2. Audit hardware virtualization, RAM, disk space, and network topology
 sudo ./install.sh --preflight
+
+# 3. Simulate all 24 installation stages without applying any changes
+sudo ./install.sh --dry-run
 ```
 
-### 3. Run Full Installation
+### Step 3: Run Full Installation
 ```bash
-# Interactive mode
+# Standard interactive mode (recommended for first-time setup)
 sudo ./install.sh
 
-# Unattended / non-interactive (CI/CD / cloud-init)
+# Unattended / non-interactive (ideal for automated CI/CD and cloud-init)
 sudo ./install.sh --non-interactive
+```
+
+### Step 4: Resume Interrupted Installations
+If a reboot is required or a stage pauses for manual intervention, resume seamlessly from the last atomic checkpoint:
+```bash
+sudo ./install.sh --resume
 ```
 
 ---
@@ -256,6 +297,36 @@ capev2-auto-installer/
 ├── SECURITY.md                     # Security policy & isolation guarantees
 ├── status.sh                       # Status dashboard wrapper
 └── uninstall.sh                    # Safe uninstaller wrapper
+```
+
+---
+
+## 🩺 Troubleshooting & Diagnostics Runbook
+
+If you encounter an issue during installation or daily operation, consult the matrix below:
+
+| Symptom / Error Message | Root Cause | Solution |
+| :--- | :--- | :--- |
+| `Permission denied (os error 13)` | Shell scripts missing executable bit (`+x`). | Run `chmod +x *.sh` or run with `sudo bash ./install.sh`. |
+| `No hardware virtualization support (VT-x/AMD-V)` | Virtualization disabled in BIOS or nested virt off in hypervisor. | Enable Intel VT-x or AMD-V in BIOS/UEFI. If inside a VM, enable Nested Virtualization in hypervisor settings (e.g. VMware "Virtualize Intel VT-x", Proxmox CPU `host`, VirtualBox "Enable Nested VT-x"). |
+| `/dev/kvm not found` | KVM kernel module not loaded. | Run `sudo modprobe kvm_intel` or `sudo modprobe kvm_amd`. The installer attempts auto-loading. |
+| `Another installer instance is running (PID: ...)` | Previous installation interrupted; stale lock file remains. | Resume with `sudo ./install.sh --resume`, or remove `/run/lock/cape-auto-installer.lock` if process is dead. |
+| `Reboot required (Exit Code 42)` | New kernel or hypervisor modules installed requiring system reload. | Reboot with `sudo reboot`, then resume with `sudo ./install.sh --resume`. |
+| `Manual intervention required (Exit Code 43)` | Unresolvable conflict (e.g., port occupied, disk full, missing ISO). | Review the generated Markdown report at `reports/manual-intervention.md`, apply recommended fix, and resume. |
+| `Package lock held / Could not get lock /var/lib/dpkg/lock` | Background package manager active (`unattended-upgrades`). | The installer retries automatically. Alternatively, wait 60s or run `sudo ./repair.sh`. |
+| Broken service or failed dependency | Systemd unit or network interface drifted. | Run `sudo ./repair.sh` to trigger self-healing, or `sudo ./diagnose.sh` to isolate failing component. |
+
+### Diagnostic Dashboards
+```bash
+# Run one-shot 11-subsystem diagnostic audit
+sudo ./diagnose.sh
+
+# Continuous real-time health monitoring
+sudo ./diagnose.sh --watch
+
+# Check stage progression and drift
+sudo ./status.sh
+sudo ./status.sh --drift
 ```
 
 ---
