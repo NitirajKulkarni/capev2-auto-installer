@@ -672,7 +672,7 @@ class Orchestrator:
         kvm_exists = os.path.exists("/dev/kvm") if not self._dry_run_mode else True
 
         if not has_virt:
-            issues.append("No hardware virtualization support (VT-x/AMD-V)")
+            issues.append("No hardware virtualization support (VT-x/AMD-V). If running inside a VM, enable Nested Virtualization in your hypervisor (e.g. VMware 'Virtualize Intel VT-x', Proxmox CPU 'host', VirtualBox 'Enable Nested VT-x').")
         if not kvm_exists and has_virt:
             warnings.append("/dev/kvm not found - KVM modules may need loading")
 
@@ -869,8 +869,11 @@ class Orchestrator:
             self._cmd.run(["modprobe", "kvm_amd"])
             if not os.path.exists("/dev/kvm"):
                 raise ManualInterventionRequired(
-                    "KVM unavailable - virtualization may be disabled in BIOS/UEFI. "
-                    "Enable Intel VT-x or AMD-V, reboot, then run: sudo ./install.sh --resume",
+                    "KVM unavailable (/dev/kvm missing). "
+                    "If on bare metal: Enable Intel VT-x or AMD-V in BIOS/UEFI. "
+                    "If inside a Virtual Machine (VMware/VirtualBox/Proxmox): Enable 'Nested Virtualization' "
+                    "in your VM settings (e.g. VMware 'Virtualize Intel VT-x/EPT', VirtualBox 'Enable Nested VT-x', Proxmox CPU 'host'). "
+                    "Then run: sudo ./install.sh --resume",
                     report_path="reports/manual-intervention.md",
                 )
 
