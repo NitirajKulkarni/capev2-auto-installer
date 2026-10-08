@@ -30,6 +30,7 @@
               <Format>NTFS</Format>
               <Label>Windows</Label>
               <Letter>C</Letter>
+              <Active>true</Active>
             </ModifyPartition>
           </ModifyPartitions>
         </Disk>
@@ -51,6 +52,10 @@
       </ImageInstall>
       <UserData>
         <AcceptEula>true</AcceptEula>
+        <ProductKey>
+          <Key>NPPR9-FWDCX-D2C8J-H872K-2YT43</Key>
+          <WillShowUI>Never</WillShowUI>
+        </ProductKey>
       </UserData>
       <RunSynchronous>
         <!-- Windows 11 Hardware Requirements Bypass in WinPE -->
@@ -84,6 +89,12 @@
     </component>
   </settings>
   <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <AutoLogon>
         <Password>
@@ -117,13 +128,14 @@
         <HideOEMRegistrationScreens>true</HideOEMRegistrationScreens>
         <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
         <NetworkLocation>Work</NetworkLocation>
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <CommandLine>powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -Command "$drv = (Get-Volume | Where-Object { $_.DriveLetter -and (Test-Path ($_.DriveLetter + ':\setup-agent.ps1')) } | Select-Object -First 1).DriveLetter; if ($drv) { &amp; ($drv + ':\setup-agent.ps1') } else { exit 1 }"</CommandLine>
+          <CommandLine>powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -Command "$p = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($p) { &amp; $p } else { exit 1 }"</CommandLine>
           <Description>Run CAPE Agent Setup</Description>
         </SynchronousCommand>
       </FirstLogonCommands>

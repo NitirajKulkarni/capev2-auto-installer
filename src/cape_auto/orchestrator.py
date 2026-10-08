@@ -2128,6 +2128,9 @@ drop = off
         else:
             install_cmd.extend(["--boot", "hd,cdrom"])
 
+        if is_nested:
+            install_cmd.extend(["--machine", "pc"])
+
         logger.info(f"Creating VM: {vm_name} ({eval_info['name']})")
         result = self._cmd.run(install_cmd, timeout=180)
         if result.success:
@@ -2135,6 +2138,25 @@ drop = off
                 "vm", vm_name, ResourceOwnership.CREATED_BY_INSTALLER,
                 disk_path=disk_path,
             )
+            # In nested virtualization, ensure SMM is completely absent from domain XML
+            if is_nested:
+                try:
+                    xml_out = self._cmd.run_capture(["virsh", "dumpxml", vm_name])
+                    if "<smm" in xml_out:
+                        import re
+                        clean_xml = re.sub(r"<smm\b[^>]*\/?>", "", xml_out)
+                        clean_xml = re.sub(r"<smm\b[^>]*>.*?</smm>", "", clean_xml, flags=re.DOTALL)
+                        tmp_xml = f"/tmp/{vm_name}-clean.xml"
+                        with open(tmp_xml, "w") as f:
+                            f.write(clean_xml)
+                        self._cmd.run(["virsh", "define", tmp_xml])
+                        try:
+                            os.remove(tmp_xml)
+                        except OSError:
+                            pass
+                except Exception as e:
+                    logger.debug(f"Nested XML sanitization notice: {e}")
+
             logger.info(f"VM '{vm_name}' created. Windows unattended installation started.")
         else:
             raise StageError(f"VM creation failed: {result.stderr}", stage="VM_CREATE")

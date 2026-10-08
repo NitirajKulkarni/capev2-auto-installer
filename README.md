@@ -7,10 +7,14 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Ubuntu: 24.04 | 22.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2022.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests: 49 Passing](https://img.shields.io/badge/Tests-49%2F49%20Passing-brightgreen.svg)](tests/)
+[![Tests: 53 Passing](https://img.shields.io/badge/Tests-53%2F53%20Passing-brightgreen.svg)](tests/)
 [![Guest: Zero--Touch Unattended](https://img.shields.io/badge/Windows-Zero--Touch%20Unattended-0078D6?logo=windows&logoColor=white)](templates/windows/)
 
-**Author & Maintainer:** [**Nitiraj Kulkarni**](https://github.com/NitirajKulkarni)
+**Author & Maintainer:** [**Nitiraj V. Kulkarni — AI Safety & Cybersecurity Researcher**](https://nitirajkulkarni.in/)  
+[![Website](https://img.shields.io/badge/Website-nitirajkulkarni.in-0078D6?style=flat&logo=googlechrome&logoColor=white)](https://nitirajkulkarni.in/)
+[![Google Scholar](https://img.shields.io/badge/Google_Scholar-Citations-4285F4?style=flat&logo=googlescholar&logoColor=white)](https://scholar.google.com/citations?user=yfHyH68AAAAJ)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/nitirajkulkarni)
+[![GitHub](https://img.shields.io/badge/GitHub-NitirajKulkarni-181717?style=flat&logo=github&logoColor=white)](https://github.com/NitirajKulkarni)
 
 ---
 
@@ -238,7 +242,7 @@ port = 8000
 
 ## 🧪 Testing & Validation
 
-The framework includes **49 automated unit and integration tests** covering all subsystems:
+The framework includes **53 automated unit and integration tests** covering all subsystems:
 
 ```bash
 # Run unit test suite:
@@ -248,7 +252,7 @@ python3 -m unittest discover tests -v
 python3 src/cape_auto/cli.py --self-test
 ```
 
-All 49 test cases pass cleanly across Python 3.10, 3.11, 3.12, 3.13, and 3.14.
+All 53 test cases pass cleanly across Python 3.10, 3.11, 3.12, 3.13, and 3.14.
 
 ---
 
@@ -267,16 +271,20 @@ capev2-auto-installer/
 ├── docs/                       # 📚 Architecture, configuration & runbooks
 ├── src/cape_auto/              # 🐍 Core Python orchestration engine
 ├── templates/                  # 📄 Systemd, network, and unattended XML templates
-└── tests/                      # 🧪 49 Automated unit & integration tests
+└── tests/                      # 🧪 53 Automated unit & integration tests
 ```
 
 ---
 
 ## 👤 Author & Maintainer
 
-**Nitiraj Kulkarni**  
-GitHub: [@NitirajKulkarni](https://github.com/NitirajKulkarni)  
-Repository: [capev2-auto-installer](https://github.com/NitirajKulkarni/capev2-auto-installer)
+### [**Nitiraj V. Kulkarni — AI Safety & Cybersecurity Researcher**](https://nitirajkulkarni.in/)
+
+- 🌐 **Website:** [nitirajkulkarni.in](https://nitirajkulkarni.in/)
+- 🎓 **Google Scholar:** [Citations & Publications](https://scholar.google.com/citations?user=yfHyH68AAAAJ)
+- 💼 **LinkedIn:** [linkedin.com/in/nitirajkulkarni](https://www.linkedin.com/in/nitirajkulkarni)
+- 🐙 **GitHub:** [@NitirajKulkarni](https://github.com/NitirajKulkarni)
+- 📦 **Repository:** [capev2-auto-installer](https://github.com/NitirajKulkarni/capev2-auto-installer)
 
 ---
 
