@@ -92,6 +92,20 @@ key4 = 3.14
         with self.assertRaises(ConfigError):
             Config(missing_path, self.temp_dir.name)
 
+    def test_project_config_toml_defaults(self):
+        project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        actual_config_path = os.path.join(project_dir, "config.toml")
+        self.assertTrue(os.path.isfile(actual_config_path))
+
+        config = Config(actual_config_path, project_dir)
+        self.assertTrue(config.get_bool("guest.enabled"))
+        self.assertTrue(config.get_bool("guest.auto_download_iso"))
+        self.assertEqual(config.get_str("guest.windows_edition"), "win10_eval")
+        self.assertEqual(config.get_str("guest.disk_bus"), "sata")
+        self.assertEqual(config.get_str("guest.network_model"), "e1000e")
+        self.assertEqual(config.get_int("guest.install_timeout_minutes"), 35)
+
 
 if __name__ == "__main__":
     unittest.main()
+
