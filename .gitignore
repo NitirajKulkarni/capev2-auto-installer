@@ -88,3 +88,23 @@ reports/*.json
 ehthumbs.db
 Thumbs.db
 Desktop.ini
+
+# Secrets, local environment & credentials
+.env
+.env.*
+*.key
+*.pem
+*.cert
+*.crt
+*credential*
+*token*
+
+# Disk images, ISOs and VM artifacts
+*.iso
+*.iso.part
+*.part
+*.qcow2
+*.img
+*.vdi
+*.vmdk
+state/unattend_staging/
