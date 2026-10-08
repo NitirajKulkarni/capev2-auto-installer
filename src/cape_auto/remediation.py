@@ -189,6 +189,16 @@ class RemediationEngine:
         poetry_path = "/etc/poetry/bin/poetry"
         poetry_bin = poetry_path if os.path.isfile(poetry_path) else ("poetry" if self._cmd.run(["which", "poetry"]).success else None)
 
+        # On Python > 3.12, poetry cannot build CAPE wheels. Ensure uv is installed
+        if not uv_bin and (not poetry_bin or sys.version_info[:2] > (3, 12)):
+            logger.info("Installing uv to /usr/local/bin for isolated Python 3.12 environment repair...")
+            self._cmd.run(
+                'curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh',
+                shell=True, timeout=120,
+            )
+            uv_check = self._cmd.run(["which", "uv"])
+            uv_bin = "uv" if uv_check.success else ("/usr/local/bin/uv" if os.path.isfile("/usr/local/bin/uv") else None)
+
         if uv_bin:
             logger.info("Using uv for environment repair (pinning Python 3.12 for python-flirt / django)")
             self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300)

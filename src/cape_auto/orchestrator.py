@@ -1131,6 +1131,14 @@ class Orchestrator:
                 "package", pkg, ResourceOwnership.MODIFIED_BY_INSTALLER
             )
 
+        # Ensure uv is installed system-wide for hermetic Python 3.12 management
+        if not self._cmd.run(["which", "uv"]).success and not os.path.isfile("/usr/local/bin/uv"):
+            logger.info("Installing uv to /usr/local/bin for isolated Python 3.12 management...")
+            self._cmd.run(
+                'curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh',
+                shell=True, timeout=120,
+            )
+
     def _stage_kvm(self) -> None:
         """Install and verify KVM/QEMU."""
         logger.info("Setting up KVM/QEMU...")
@@ -1316,9 +1324,18 @@ class Orchestrator:
         cape_user = self._config.get_str("installation.cape_user", "cape")
         python_mgr = self._config.get_str("installation.python_manager", "auto")
 
-        # Determine package manager: default to uv as uv manages python toolchains automatically
-        if python_mgr == "auto":
-            if self._cmd.run(["which", "uv"]).success:
+        # Determine package manager:
+        # If host Python > 3.12 (e.g. Python 3.14 on Ubuntu 26.04), Poetry will fail because
+        # greenlet/msgspec/python-flirt cannot compile on Python 3.14. Force uv to manage hermetic Python 3.12.
+        host_py_version = sys.version_info[:2]
+        if host_py_version > (3, 12):
+            python_mgr = "uv"
+            logger.info(
+                f"Host Python is {sys.version_info.major}.{sys.version_info.minor} (> 3.12). "
+                "Forcing uv to manage isolated hermetic Python 3.12 (avoids greenlet/flirt build failures)."
+            )
+        elif python_mgr == "auto":
+            if self._cmd.run(["which", "uv"]).success or os.path.isfile("/usr/local/bin/uv"):
                 python_mgr = "uv"
             elif os.path.isfile("/etc/poetry/bin/poetry"):
                 python_mgr = "poetry"
@@ -1363,20 +1380,23 @@ class Orchestrator:
             )
         elif python_mgr == "uv":
             # Install uv if needed
-            if not self._cmd.run(["which", "uv"]).success:
-                logger.info("Installing uv...")
+            uv_installed = self._cmd.run(["which", "uv"]).success or os.path.isfile("/usr/local/bin/uv")
+            if not uv_installed:
+                logger.info("Installing uv to /usr/local/bin...")
                 self._cmd.run(
-                    'curl -LsSf https://astral.sh/uv/install.sh | sh',
+                    'curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh',
                     shell=True, timeout=120,
                 )
 
+            uv_bin = "/usr/local/bin/uv" if os.path.isfile("/usr/local/bin/uv") else "uv"
+
             # Pin to Python 3.12: uv manages Python versions standalone
             logger.info("Ensuring Python 3.12 toolchain via uv (avoids Python 3.14 / python-flirt failure)...")
-            self._cmd.run(["uv", "python", "install", "3.12"], timeout=300)
+            self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300)
 
             logger.info(f"Creating Python 3.12 virtual environment at {venv_dir}...")
             self._cmd.run_as_user(
-                ["uv", "venv", "--python", "3.12", venv_dir],
+                [uv_bin, "venv", "--python", "3.12", venv_dir],
                 user=cape_user,
                 cwd=cape_root,
                 timeout=180,
@@ -1384,7 +1404,7 @@ class Orchestrator:
 
             logger.info("Syncing CAPEv2 dependencies into Python 3.12 environment...")
             result = self._cmd.run_as_user(
-                ["uv", "sync", "--python", "3.12", "--no-install-project"],
+                [uv_bin, "sync", "--python", "3.12", "--no-install-project"],
                 user=cape_user,
                 cwd=cape_root,
                 timeout=900,

@@ -192,6 +192,10 @@ find_python() {
                 fi
                 PYTHON_BIN=$(command -v python3)
                 log_ok "Using Python $ver at $PYTHON_BIN (uv will manage isolated Python 3.12 environment)"
+                if ! command -v uv &>/dev/null && [[ ! -f /usr/local/bin/uv ]]; then
+                    log_info "Ensuring uv is installed to /usr/local/bin for isolated Python 3.12 management..."
+                    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh 2>/dev/null || true
+                fi
                 return 0
             fi
         fi
