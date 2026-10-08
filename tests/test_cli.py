@@ -21,18 +21,28 @@ class TestCLI(unittest.TestCase):
         self.assertFalse(args.preflight)
         self.assertFalse(args.self_test)
         self.assertFalse(args.uninstall)
+        self.assertFalse(args.clean_install)
 
     def test_mutually_exclusive_modes(self):
-        # Specifying both --resume and --repair should raise SystemExit (parse error)
+        # Specifying mutually exclusive modes should raise SystemExit (parse error)
         with self.assertRaises(SystemExit):
             self.parser.parse_args(["--resume", "--repair"])
 
         with self.assertRaises(SystemExit):
             self.parser.parse_args(["--status", "--diagnose"])
 
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["--clean-install", "--resume"])
+
     def test_individual_modes(self):
         args = self.parser.parse_args(["--resume"])
         self.assertTrue(args.resume)
+
+        args = self.parser.parse_args(["--clean-install"])
+        self.assertTrue(args.clean_install)
+
+        args = self.parser.parse_args(["--clean"])
+        self.assertTrue(args.clean_install)
 
         args = self.parser.parse_args(["--diagnose", "--watch"])
         self.assertTrue(args.diagnose)
@@ -61,3 +71,4 @@ class TestCLI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -154,6 +154,8 @@ sudo ./install.sh --resume
 | Command | Action | Use Case |
 |---------|--------|----------|
 | `sudo ./install.sh` | **Full Install** | Runs discovery, installs dependencies, KVM, CAPE, and runs health tests. |
+| `sudo ./clean-install.sh` | **Clean Install** | Wipes prior VMs, disks, networks, `/opt/CAPEv2`, and state, then installs fresh. |
+| `sudo ./install.sh --clean-install` | **Clean Install** | Same as `./clean-install.sh` (can combine with `--auto-download-iso`, etc.). |
 | `sudo ./install.sh --resume` | **Resume** | Safely picks up from the last checkpoint after reboot or intervention. |
 | `sudo ./diagnose.sh` | **Diagnose** | Runs 11 subsystem probes across KVM, libvirt, network, and services. |
 | `sudo ./diagnose.sh --watch` | **Monitor** | Real-time continuous health dashboard (auto-refreshing). |
@@ -350,6 +352,7 @@ capev2-auto-installer/
 │   └── test_state.py               # State machine & checkpointing tests
 ├── .gitattributes                  # Normalized line endings (LF for shell)
 ├── .gitignore                      # Clean repository ignore list
+├── clean-install.sh                # Clean reinstall wrapper (full wipe & fresh install)
 ├── config.toml                     # Master configuration file
 ├── CONTRIBUTING.md                 # Contribution guidelines
 ├── diagnose.sh                     # Diagnostic entry point wrapper

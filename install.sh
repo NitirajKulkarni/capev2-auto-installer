@@ -35,6 +35,7 @@ CAPEv2 Automated Installer
 
 Usage:
     sudo ./install.sh                   Full installation (interactive)
+    sudo ./install.sh --clean-install   Clean install: wipe previous installation & install from scratch
     sudo ./install.sh --non-interactive Non-interactive mode
     sudo ./install.sh --resume          Resume interrupted installation
     sudo ./install.sh --repair          Repair broken installation
@@ -58,6 +59,11 @@ Configuration:
 Examples:
     # Fresh install with defaults (Windows 10 Enterprise Eval)
     sudo ./install.sh
+
+    # Complete clean reinstall (wipes prior VMs, disks, /opt/CAPEv2, and state)
+    sudo ./install.sh --clean-install
+    # or using the shortcut wrapper:
+    sudo ./clean-install.sh
 
     # Auto-download Windows 10 Enterprise Eval ISO
     sudo ./install.sh --auto-download-iso

@@ -173,7 +173,37 @@ enabled = false
         found_oemdrv = any("OEMDRV" in cmd for cmd in calls)
         self.assertTrue(found_oemdrv)
 
+    def test_clean_install_dry_run(self):
+        self.orchestrator._dry_run_mode = True
+        exit_code = self.orchestrator.clean_install()
+        self.assertEqual(exit_code, 0)
+
+    def test_clean_install_teardown(self):
+        from unittest.mock import MagicMock
+        mock_cmd = MagicMock()
+        mock_cmd.run.return_value.success = True
+        mock_cmd.run_capture.return_value = "cape-win"
+        self.orchestrator._cmd = mock_cmd
+        self.orchestrator.install = MagicMock(return_value=0)
+
+        # Create dummy state and files
+        state_file = os.path.join(self.temp_dir.name, "state", "test.json")
+        with open(state_file, "w") as f:
+            f.write("{}")
+
+        exit_code = self.orchestrator.clean_install()
+        self.assertEqual(exit_code, 0)
+        self.orchestrator.install.assert_called_once()
+
+        # Verify virsh destroy/undefine calls
+        calls = [c[0][0] for c in mock_cmd.run.call_args_list]
+        found_destroy = any("destroy" in cmd for cmd in calls)
+        found_undefine = any("undefine" in cmd for cmd in calls)
+        self.assertTrue(found_destroy)
+        self.assertTrue(found_undefine)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

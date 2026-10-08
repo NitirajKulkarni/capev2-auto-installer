@@ -55,6 +55,8 @@ Examples:
                            help="Run preflight checks only")
     mode_group.add_argument("--self-test", action="store_true",
                            help="Run framework self-tests")
+    mode_group.add_argument("--clean-install", "--clean", action="store_true",
+                           help="Wipe previous installation, VM, services, and state, then perform a fresh installation")
     mode_group.add_argument("--uninstall", action="store_true",
                            help="Uninstall CAPE resources created by this tool")
     mode_group.add_argument("--update", action="store_true",
@@ -142,6 +144,8 @@ def main() -> int:
             return orchestrator.repair()
         elif args.resume:
             return orchestrator.resume()
+        elif args.clean_install:
+            return orchestrator.clean_install()
         elif args.uninstall:
             return orchestrator.uninstall(
                 keep_user=args.keep_cape_user,

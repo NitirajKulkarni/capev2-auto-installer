@@ -591,6 +591,122 @@ class Orchestrator:
 
         return 0 if failed == 0 else 1
 
+    def clean_install(self) -> int:
+        """
+        Perform a complete clean installation:
+        1. Stop and remove all CAPE systemd services.
+        2. Destroy and undefine analysis VM, disks, snapshots, and unattended ISOs.
+        3. Destroy and undefine libvirt analysis network.
+        4. Remove previous CAPE directory (/opt/CAPEv2).
+        5. Purge installer state, backups, and checkpoints.
+        6. Start a fresh unattended installation from scratch.
+        """
+        logger.info("═" * 78)
+        logger.info("  STARTING CLEAN INSTALLATION (FULL WIPE & FRESH PROVISION)")
+        logger.info("═" * 78)
+
+        if self._dry_run_mode:
+            logger.info("[DRY-RUN] Would wipe existing CAPE services, VMs, disks, networks, and /opt/CAPEv2, then reinstall.")
+            return self.dry_run()
+
+        # Step 1: Stop and disable all CAPE services
+        logger.info("[CLEAN 1/5] Stopping and removing systemd services...")
+        cape_services = ["cape-web", "cape-processor", "cape", "cape-rooter"]
+        for svc in cape_services:
+            self._cmd.run(["systemctl", "stop", f"{svc}.service"])
+            self._cmd.run(["systemctl", "disable", f"{svc}.service"])
+            svc_file = f"/etc/systemd/system/{svc}.service"
+            if os.path.isfile(svc_file):
+                try:
+                    os.remove(svc_file)
+                except Exception:
+                    pass
+        self._cmd.run(["systemctl", "daemon-reload"])
+
+        # Step 2: Tear down analysis VM, disks, and snapshots
+        vm_name = self._config.get_str("guest.name", "cape-win")
+        disk_path = self._config.get_str("guest.disk_path", "/var/lib/libvirt/images/cape-win.qcow2")
+        unattend_iso = f"/var/lib/libvirt/images/{vm_name}-unattend.iso"
+        staging_dir = os.path.join(self._project_dir, "state", "unattend_staging")
+
+        logger.info(f"[CLEAN 2/5] Tearing down analysis VM '{vm_name}' and storage...")
+        vm_list = self._cmd.run_capture(["virsh", "list", "--all"])
+        if vm_name in vm_list:
+            self._cmd.run(["virsh", "destroy", vm_name])
+            self._cmd.run(["virsh", "undefine", vm_name, "--remove-all-storage", "--nvram", "--snapshots-metadata"])
+
+        # Remove disk files and staging files
+        for fpath in [disk_path, unattend_iso, os.path.join(self._project_dir, "state", f"{vm_name}-unattend.iso")]:
+            if os.path.isfile(fpath):
+                try:
+                    os.remove(fpath)
+                    logger.info(f"Removed file: {fpath}")
+                except Exception as e:
+                    logger.warning(f"Could not remove {fpath}: {e}")
+
+        if os.path.isdir(staging_dir):
+            import shutil
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+        # Step 3: Tear down libvirt analysis network
+        net_name = self._config.get_str("network.libvirt_network_name", "cape-analysis")
+        logger.info(f"[CLEAN 3/5] Tearing down analysis network '{net_name}'...")
+        net_list = self._cmd.run_capture(["virsh", "net-list", "--all"])
+        if net_name in net_list:
+            self._cmd.run(["virsh", "net-destroy", net_name])
+            self._cmd.run(["virsh", "net-undefine", net_name])
+
+        net_xml = os.path.join(self._project_dir, "state", "cape-network.xml")
+        if os.path.isfile(net_xml):
+            try:
+                os.remove(net_xml)
+            except Exception:
+                pass
+
+        # Step 4: Remove previous CAPE repository / root directory
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        logger.info(f"[CLEAN 4/5] Removing previous CAPE directory '{cape_root}'...")
+        if os.path.isdir(cape_root):
+            import shutil
+            try:
+                shutil.rmtree(cape_root, ignore_errors=True)
+            except Exception as e:
+                logger.warning(f"Could not completely remove {cape_root}: {e}")
+            if os.path.isdir(cape_root):
+                self._cmd.run(["rm", "-rf", cape_root])
+
+        # Step 5: Purge installer state and start fresh
+        logger.info("[CLEAN 5/5] Purging installer state database and checkpoints...")
+        state_dir = os.path.join(self._project_dir, "state")
+        if os.path.isdir(state_dir):
+            for fname in os.listdir(state_dir):
+                if fname.endswith(".json") or fname.endswith(".xml"):
+                    try:
+                        os.remove(os.path.join(state_dir, fname))
+                    except Exception:
+                        pass
+
+        # Re-initialize state manager with clean state
+        self._state = StateManager(
+            state_dir=os.path.join(self._project_dir, "state"),
+            backup_dir=os.path.join(self._project_dir, "backups"),
+        )
+        self._remediation = RemediationEngine(
+            cmd=self._cmd,
+            state=self._state,
+            allow_medium=self._config.get_bool("installation.auto_repair", True),
+            allow_high=not self._is_remote and self._config.get_bool("safety.destructive_repair", False),
+            allow_destructive=self._config.get_bool("safety.destructive_repair", False),
+            is_remote=self._is_remote,
+        )
+
+        logger.info("═" * 78)
+        logger.info("  CLEANUP COMPLETE. INITIATING FRESH UNATTENDED INSTALLATION...")
+        logger.info("═" * 78)
+
+        # Launch fresh install from stage 0
+        return self.install()
+
     def uninstall(self, keep_user: bool = False, keep_data: bool = False,
                   keep_vm: bool = False, full_reset: bool = False,
                   dry_run: bool = False) -> int:
