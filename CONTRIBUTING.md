@@ -10,8 +10,8 @@ Please be respectful and constructive in all discussions, issues, and code revie
 
 1. **Fork and Clone**:
    ```bash
-   git clone https://github.com/<your-username>/cape-auto-installer.git
-   cd cape-auto-installer
+   git clone https://github.com/NitirajKulkarni/capev2-auto-installer.git
+   cd capev2-auto-installer
    ```
 
 2. **Branching**:

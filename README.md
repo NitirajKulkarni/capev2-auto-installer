@@ -7,10 +7,9 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Ubuntu: 24.04 | 22.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2022.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Target: CAPEv2](https://img.shields.io/badge/Sandbox-CAPEv2%20Latest-red.svg)](https://github.com/kevoreilly/CAPEv2)
-[![Build: Push Ready](https://img.shields.io/badge/Git-Push%20Ready-success.svg)]()
+[![CI](https://github.com/NitirajKulkarni/capev2-auto-installer/actions/workflows/ci.yml/badge.svg)](https://github.com/NitirajKulkarni/capev2-auto-installer/actions/workflows/ci.yml)
 
-**Author:** **Nitiraj Kulkarni**
+**Author & Maintainer:** [**Nitiraj Kulkarni**](https://github.com/NitirajKulkarni)
 
 </div>
 
@@ -80,8 +79,8 @@ yielding an end-to-end operational CAPEv2 sandbox with zero unnecessary drama.
 
 ### 1. Clone & Enter Directory
 ```bash
-git clone https://github.com/<your-org>/cape-auto-installer.git
-cd cape-auto-installer
+git clone https://github.com/NitirajKulkarni/capev2-auto-installer.git
+cd capev2-auto-installer
 ```
 
 ### 2. Inspect & Dry-Run (Preview Actions)
@@ -209,7 +208,7 @@ mongodb_port = 27017
 ## 📁 Repository Directory Structure
 
 ```
-cape-auto-installer/
+capev2-auto-installer/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                  # Multi-version CI workflow (Ubuntu 24.04/22.04)
@@ -279,7 +278,7 @@ All 38 test cases pass out-of-the-box across Python 3.10, 3.11, 3.12, and 3.13.
 
 ## 👤 Author & Maintainer
 
-**Nitiraj V. Kulkarni**  
+**Nitiraj Kulkarni** ([@NitirajKulkarni](https://github.com/NitirajKulkarni))
 
 
 ---

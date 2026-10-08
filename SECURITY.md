@@ -6,7 +6,7 @@ Security is critical when dealing with automated malware analysis sandboxes.
 
 If you discover a security vulnerability in this project, please **do not open a public issue**. Instead, report it directly to the maintainer:
 
-- **Lead Author & Maintainer**: Nitiraj Kulkarni
+- **Lead Author & Maintainer**: Nitiraj Kulkarni ([@NitirajKulkarni](https://github.com/NitirajKulkarni))
 - **Subject**: `[SECURITY VULNERABILITY] CAPEv2 Automated Installer`
 
 Please include:
