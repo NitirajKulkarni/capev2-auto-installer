@@ -9,16 +9,21 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-# Python 3.11+ has tomllib; for 3.10 we provide a fallback
+# Python 3.11+ has tomllib in standard library; for 3.10 we provide safe fallbacks
+tomllib = None
 if sys.version_info >= (3, 11):
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        tomllib = None
 else:
-    # Minimal TOML parser for 3.10 compatibility (stdlib only)
     try:
         import tomllib  # type: ignore
     except ImportError:
-        import tomli as tomllib  # type: ignore  # noqa: F811
-        # If tomli is also unavailable, we implement a basic parser below
+        try:
+            import tomli as tomllib  # type: ignore
+        except ImportError:
+            tomllib = None
 
 
 class _MinimalTOMLParser:
@@ -126,16 +131,13 @@ class Config:
     def _load_toml(self, path: str) -> None:
         """Load TOML configuration file."""
         content = Path(path).read_text(encoding="utf-8")
-        try:
-            if sys.version_info >= (3, 11):
+        if tomllib is not None:
+            try:
                 self._data = tomllib.loads(content)
-            else:
-                try:
-                    self._data = tomllib.loads(content)
-                except Exception:
-                    self._data = _MinimalTOMLParser.loads(content)
-        except Exception:
-            self._data = _MinimalTOMLParser.loads(content)
+                return
+            except Exception:
+                pass
+        self._data = _MinimalTOMLParser.loads(content)
 
     def _apply_env_overrides(self) -> None:
         """Override config from environment variables."""

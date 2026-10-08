@@ -45,11 +45,5 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@master
-        with:
-          severity: warning
-          ignore_paths: >-
-            .git
-            state
-            logs
-            backups
+        run: |
+          shellcheck install.sh diagnose.sh repair.sh status.sh uninstall.sh

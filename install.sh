@@ -7,12 +7,13 @@
 set -euo pipefail
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1; pwd)"
 LOCK_FILE="/run/lock/cape-auto-installer.lock"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=10
 LOG_DIR="${SCRIPT_DIR}/logs"
 STATE_DIR="${SCRIPT_DIR}/state"
+PYTHON_BIN=""
 
 # ─── Color helpers ───────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -22,10 +23,10 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-log_info()  { echo -e "${CYAN}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; }
+log_info()  { printf "%b[INFO]%b  %s %s\n" "${CYAN}" "${NC}" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+log_ok()    { printf "%b[OK]%b    %s %s\n" "${GREEN}" "${NC}" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+log_warn()  { printf "%b[WARN]%b  %s %s\n" "${YELLOW}" "${NC}" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+log_error() { printf "%b[ERROR]%b %s %s\n" "${RED}" "${NC}" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 show_help() {
@@ -79,7 +80,7 @@ HELP
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         log_error "This installer must be run as root."
-        echo "  Usage: sudo $0 $*"
+        printf "  Usage: sudo %s %s\n" "$0" "$*"
         exit 1
     fi
 }
@@ -113,7 +114,7 @@ acquire_lock() {
             rm -f "$LOCK_FILE"
         fi
     fi
-    echo $$ > "$LOCK_FILE"
+    echo "$$" > "$LOCK_FILE"
 }
 
 release_lock() {
@@ -122,16 +123,18 @@ release_lock() {
 
 # ─── Signal handling ─────────────────────────────────────────────────────────
 cleanup() {
-    local exit_code=$?
+    local exit_code
+    exit_code=$?
     log_warn "Installer interrupted (signal received)."
     log_info "State has been saved. Resume with: sudo ./install.sh --resume"
     release_lock
-    exit $exit_code
+    exit "$exit_code"
 }
 trap cleanup SIGINT SIGTERM SIGHUP
 
 # ─── Python discovery ───────────────────────────────────────────────────────
 find_python() {
+    local cmd ver major minor
     local candidates=(
         python3.12
         python3.11
@@ -140,12 +143,10 @@ find_python() {
     )
     for cmd in "${candidates[@]}"; do
         if command -v "$cmd" &>/dev/null; then
-            local ver
             ver=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || true)
             if [[ -n "$ver" ]]; then
-                local major minor
-                major=$(echo "$ver" | cut -d. -f1)
-                minor=$(echo "$ver" | cut -d. -f2)
+                major="${ver%%.*}"
+                minor="${ver##*.}"
                 if [[ $major -ge $MIN_PYTHON_MAJOR && $minor -ge $MIN_PYTHON_MINOR ]]; then
                     PYTHON_BIN=$(command -v "$cmd")
                     log_ok "Found Python $ver at $PYTHON_BIN"
@@ -202,7 +203,8 @@ main() {
     acquire_lock
 
     # Log everything
-    local log_file="${LOG_DIR}/run-$(date '+%Y%m%d-%H%M%S').log"
+    local log_file
+    log_file="${LOG_DIR}/run-$(date '+%Y%m%d-%H%M%S').log"
     exec > >(tee -a "$log_file") 2>&1
 
     log_info "CAPEv2 Automated Installer starting..."
@@ -229,7 +231,7 @@ main() {
         log_info "Run 'sudo ./install.sh --diagnose' for troubleshooting."
         log_info "Run 'sudo ./install.sh --resume' to retry from last checkpoint."
     fi
-    exit $exit_code
+    exit "$exit_code"
 }
 
 main "$@"
