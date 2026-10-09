@@ -269,11 +269,11 @@ main() {
         fi
     fi
 
-    # Optimize uv network parameters for full bandwidth utilization over VM NAT
-    export UV_HTTP_TIMEOUT=300
-    export UV_HTTP_CONNECT_TIMEOUT=30
+    # Optimize uv network parameters: sequential downloads (1) prevents VM NAT buffer exhaustion
+    export UV_HTTP_TIMEOUT=120
+    export UV_HTTP_CONNECT_TIMEOUT=15
     export UV_HTTP_RETRIES=5
-    export UV_CONCURRENT_DOWNLOADS=8
+    export UV_CONCURRENT_DOWNLOADS=1
 
     # Delegate to Python orchestrator
     log_info "Launching Python orchestrator..."

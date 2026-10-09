@@ -204,10 +204,10 @@ class RemediationEngine:
         if uv_bin:
             logger.info("Using uv for environment repair (pinning Python 3.12 for python-flirt / django)")
             uv_env = {
-                "UV_HTTP_TIMEOUT": "300",
-                "UV_HTTP_CONNECT_TIMEOUT": "30",
+                "UV_HTTP_TIMEOUT": "120",
+                "UV_HTTP_CONNECT_TIMEOUT": "15",
                 "UV_HTTP_RETRIES": "5",
-                "UV_CONCURRENT_DOWNLOADS": "8",
+                "UV_CONCURRENT_DOWNLOADS": "1",
             }
             self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300, env=uv_env)
             venv_path = os.path.join(cape_root, ".venv")

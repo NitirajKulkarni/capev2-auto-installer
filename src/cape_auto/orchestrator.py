@@ -1420,10 +1420,10 @@ class Orchestrator:
 
             self._optimize_network_stack()
             uv_env = {
-                "UV_HTTP_TIMEOUT": "300",
-                "UV_HTTP_CONNECT_TIMEOUT": "30",
+                "UV_HTTP_TIMEOUT": "120",
+                "UV_HTTP_CONNECT_TIMEOUT": "15",
                 "UV_HTTP_RETRIES": "5",
-                "UV_CONCURRENT_DOWNLOADS": "8",
+                "UV_CONCURRENT_DOWNLOADS": "1",
             }
 
             # Pin to Python 3.12: uv manages Python versions standalone
