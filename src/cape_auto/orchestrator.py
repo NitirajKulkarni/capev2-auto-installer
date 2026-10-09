@@ -239,6 +239,9 @@ class Orchestrator:
                 logger.info(f"Available stages: {', '.join(INSTALLATION_STAGES)}")
                 return 1
             start_idx = idx
+            # Force reset state for from_stage and all subsequent stages
+            for i in range(start_idx, len(INSTALLATION_STAGES)):
+                self._state.update_stage(INSTALLATION_STAGES[i], StageStatus.PENDING)
         else:
             # Check for resume
             resume = self._state.get_resume_stage()
