@@ -1443,38 +1443,81 @@ class Orchestrator:
             else:
                 logger.info(f"Using existing Python 3.12 virtual environment at {venv_dir}")
 
-            logger.info("Syncing CAPEv2 dependencies into Python 3.12 environment...")
-            result = self._cmd.run_as_user(
-                [uv_bin, "sync", "-v", "--python", "3.12", "--no-install-project"],
+            # Ensure pip, setuptools, and wheel exist in virtual environment
+            self._cmd.run_as_user(
+                [uv_bin, "pip", "install", "--python", venv_python, "pip", "setuptools", "wheel"],
                 user=cape_user,
                 cwd=cape_root,
-                timeout=1800,
-                live_output=True,
+                timeout=120,
                 env=uv_env,
             )
-            if not result.success:
-                logger.warning(
-                    f"uv sync returned non-zero ({result.stderr[:200] if result.stderr else ''}), falling back to uv pip install..."
+
+            req_file = os.path.join(cape_root, "requirements.txt")
+            result = None
+
+            # METHOD 1: Direct fast wheel install from requirements.txt (fastest, production only)
+            if os.path.isfile(req_file):
+                logger.info("Installing production CAPEv2 dependencies from requirements.txt via fast wheel engine...")
+                result = self._cmd.run_as_user(
+                    [uv_bin, "pip", "install", "--python", venv_python, "-r", "requirements.txt"],
+                    user=cape_user,
+                    cwd=cape_root,
+                    timeout=1200,
+                    live_output=True,
+                    env=uv_env,
                 )
-                req_file = os.path.join(cape_root, "requirements.txt")
+
+            # METHOD 2: Standard Python virtualenv pip fallback (classic reliable method)
+            if not result or not result.success:
+                logger.warning("Fast wheel install encountered issues, falling back to standard virtualenv pip...")
+                py_run = venv_python if os.path.isfile(venv_python) else "python3"
                 if os.path.isfile(req_file):
                     result = self._cmd.run_as_user(
-                        [uv_bin, "pip", "install", "-v", "--python", venv_python, "-r", "requirements.txt"],
+                        [py_run, "-m", "pip", "install", "--retries", "5", "--timeout", "120", "-r", "requirements.txt"],
                         user=cape_user,
                         cwd=cape_root,
                         timeout=1800,
                         live_output=True,
-                        env=uv_env,
                     )
-                if not result.success:
-                    result = self._cmd.run_as_user(
-                        [uv_bin, "pip", "install", "-v", "--python", venv_python, "-e", "."],
-                        user=cape_user,
-                        cwd=cape_root,
-                        timeout=1800,
-                        live_output=True,
-                        env=uv_env,
-                    )
+
+            # METHOD 3: Poetry fallback (if configured / available)
+            if (not result or not result.success) and os.path.isfile("/etc/poetry/bin/poetry"):
+                logger.warning("Pip install encountered issues, falling back to Poetry...")
+                self._cmd.run_as_user(
+                    ["/etc/poetry/bin/poetry", "env", "use", venv_python],
+                    user=cape_user,
+                    cwd=cape_root,
+                    timeout=60,
+                )
+                result = self._cmd.run_as_user(
+                    ["/etc/poetry/bin/poetry", "install", "--no-root", "--without", "dev"],
+                    user=cape_user,
+                    cwd=cape_root,
+                    timeout=1800,
+                    live_output=True,
+                )
+
+            # METHOD 4: uv sync fallback (production only, no dev bloat, no debug spam)
+            if not result or not result.success:
+                logger.warning("Falling back to uv sync (production dependencies only)...")
+                result = self._cmd.run_as_user(
+                    [uv_bin, "sync", "--no-dev", "--python", "3.12", "--no-install-project"],
+                    user=cape_user,
+                    cwd=cape_root,
+                    timeout=1800,
+                    live_output=True,
+                    env=uv_env,
+                )
+
+            # Install CAPEv2 itself into the virtual environment without reinstalling deps
+            if result and result.success:
+                self._cmd.run_as_user(
+                    [uv_bin, "pip", "install", "--python", venv_python, "-e", ".", "--no-deps"],
+                    user=cape_user,
+                    cwd=cape_root,
+                    timeout=120,
+                    env=uv_env,
+                )
 
         if not result.success:
             raise StageError(
@@ -1495,15 +1538,23 @@ class Orchestrator:
             timeout=30,
         )
         if not verify_res.success:
-            logger.warning("Django verification failed in virtualenv. Attempting direct auto-repair with uv...")
+            logger.warning("Django verification failed in virtualenv. Attempting direct auto-repair...")
             if python_mgr == "uv":
                 self._cmd.run_as_user(
-                    [uv_bin, "pip", "install", "-v", "--python", venv_python, "django", "requests"],
+                    [uv_bin, "pip", "install", "--python", venv_python, "django", "requests", "sflock", "pefile"],
                     user=cape_user,
                     cwd=cape_root,
-                    timeout=600,
+                    timeout=300,
                     live_output=True,
                     env=uv_env,
+                )
+            else:
+                self._cmd.run_as_user(
+                    [active_py, "-m", "pip", "install", "django", "requests", "sflock", "pefile"],
+                    user=cape_user,
+                    cwd=cape_root,
+                    timeout=300,
+                    live_output=True,
                 )
             verify_res = self._cmd.run_as_user(
                 [active_py, "-c", "import django; print('CAPE core dependencies verified')"],

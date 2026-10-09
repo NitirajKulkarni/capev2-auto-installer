@@ -214,32 +214,54 @@ class RemediationEngine:
             venv_py = os.path.join(venv_path, "bin", "python")
             if not os.path.isfile(venv_py):
                 self._cmd.run([uv_bin, "venv", "--clear", "--python", "3.12", venv_path], cwd=cape_root, timeout=120, env=uv_env)
-            result = self._cmd.run(
-                [uv_bin, "sync", "-v", "--python", "3.12", "--no-install-project"],
-                cwd=cape_root,
-                timeout=1800,
-                live_output=True,
-                env=uv_env,
-            )
-            if not result.success:
-                logger.warning(f"uv sync returned non-zero, falling back to uv pip install: {result.stderr[:200]}")
-                req_file = os.path.join(cape_root, "requirements.txt")
+
+            # Ensure pip, setuptools, and wheel exist in virtual environment
+            self._cmd.run([uv_bin, "pip", "install", "--python", venv_py, "pip", "setuptools", "wheel"], cwd=cape_root, timeout=120, env=uv_env)
+
+            req_file = os.path.join(cape_root, "requirements.txt")
+            result = None
+
+            # METHOD 1: Fast wheel install from requirements.txt
+            if os.path.isfile(req_file):
+                logger.info("Repairing environment: installing production dependencies from requirements.txt...")
+                result = self._cmd.run(
+                    [uv_bin, "pip", "install", "--python", venv_py, "-r", "requirements.txt"],
+                    cwd=cape_root,
+                    timeout=1200,
+                    live_output=True,
+                    env=uv_env,
+                )
+
+            # METHOD 2: Standard virtualenv pip fallback
+            if not result or not result.success:
+                logger.warning("Fast wheel install encountered issues, falling back to standard virtualenv pip...")
                 if os.path.isfile(req_file):
                     result = self._cmd.run(
-                        [uv_bin, "pip", "install", "-v", "--python", venv_py, "-r", "requirements.txt"],
+                        [venv_py, "-m", "pip", "install", "--retries", "5", "--timeout", "120", "-r", "requirements.txt"],
                         cwd=cape_root,
                         timeout=1800,
                         live_output=True,
-                        env=uv_env,
                     )
-                if not result.success:
-                    result = self._cmd.run(
-                        [uv_bin, "pip", "install", "-v", "--python", venv_py, "-e", "."],
-                        cwd=cape_root,
-                        timeout=1800,
-                        live_output=True,
-                        env=uv_env,
-                    )
+
+            # METHOD 3: uv sync fallback (production only, no dev bloat)
+            if not result or not result.success:
+                logger.warning("Falling back to uv sync (production dependencies only)...")
+                result = self._cmd.run(
+                    [uv_bin, "sync", "--no-dev", "--python", "3.12", "--no-install-project"],
+                    cwd=cape_root,
+                    timeout=1800,
+                    live_output=True,
+                    env=uv_env,
+                )
+
+            # Install CAPEv2 itself
+            if result and result.success:
+                self._cmd.run(
+                    [uv_bin, "pip", "install", "--python", venv_py, "-e", ".", "--no-deps"],
+                    cwd=cape_root,
+                    timeout=120,
+                    env=uv_env,
+                )
         elif poetry_bin:
             logger.info("Using poetry for environment repair")
             py_exec = "python3.12" if self._cmd.run(["which", "python3.12"]).success else "python3.11"
