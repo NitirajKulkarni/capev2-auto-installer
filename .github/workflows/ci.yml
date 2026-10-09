@@ -46,4 +46,4 @@ jobs:
 
       - name: Run ShellCheck
         run: |
-          shellcheck install.sh diagnose.sh repair.sh status.sh uninstall.sh
+          shellcheck install.sh diagnose.sh repair.sh status.sh uninstall.sh clean-install.sh
