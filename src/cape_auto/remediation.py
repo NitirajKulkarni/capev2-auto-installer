@@ -207,7 +207,7 @@ class RemediationEngine:
                 "UV_HTTP_TIMEOUT": "120",
                 "UV_HTTP_CONNECT_TIMEOUT": "15",
                 "UV_HTTP_RETRIES": "5",
-                "UV_CONCURRENT_DOWNLOADS": "1",
+                "UV_CONCURRENT_DOWNLOADS": "16",
             }
             self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300, env=uv_env)
             venv_path = os.path.join(cape_root, ".venv")

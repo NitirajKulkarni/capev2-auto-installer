@@ -52,10 +52,6 @@
       </ImageInstall>
       <UserData>
         <AcceptEula>true</AcceptEula>
-        <ProductKey>
-          <Key>NPPR9-FWDCX-D2C8J-H872K-2YT43</Key>
-          <WillShowUI>Never</WillShowUI>
-        </ProductKey>
       </UserData>
       <RunSynchronous>
         <!-- Windows 11 Hardware Requirements Bypass in WinPE -->

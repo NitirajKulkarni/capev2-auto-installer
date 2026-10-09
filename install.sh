@@ -270,15 +270,17 @@ main() {
     fi
 
     # Optimize network interface offloading: disable TSO/GSO to prevent 50KB/s throttling over VM NAT
-    for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v 'lo' || true); do
-        ethtool -K "$iface" tso off gso off gro off 2>/dev/null || true
-    done
+    ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v 'lo' | while IFS= read -r iface; do
+        if [ -n "$iface" ]; then
+            ethtool -K "$iface" tso off gso off gro off 2>/dev/null || true
+        fi
+    done || true
 
-    # Optimize uv network parameters: sequential downloads (1) prevents VM NAT buffer exhaustion
+    # Optimize uv network parameters: higher concurrency (16) for speed, protected by TSO/GSO offload disable
     export UV_HTTP_TIMEOUT=120
     export UV_HTTP_CONNECT_TIMEOUT=15
     export UV_HTTP_RETRIES=5
-    export UV_CONCURRENT_DOWNLOADS=1
+    export UV_CONCURRENT_DOWNLOADS=16
 
     # Delegate to Python orchestrator
     log_info "Launching Python orchestrator..."

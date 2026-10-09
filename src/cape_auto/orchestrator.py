@@ -1435,7 +1435,7 @@ class Orchestrator:
                 "UV_HTTP_TIMEOUT": "120",
                 "UV_HTTP_CONNECT_TIMEOUT": "15",
                 "UV_HTTP_RETRIES": "5",
-                "UV_CONCURRENT_DOWNLOADS": "1",
+                "UV_CONCURRENT_DOWNLOADS": "16",
             }
 
             # Pin to Python 3.12: uv manages Python versions standalone
