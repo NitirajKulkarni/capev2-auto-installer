@@ -214,7 +214,7 @@ class RemediationEngine:
             if not os.path.isfile(venv_py):
                 self._cmd.run([uv_bin, "venv", "--clear", "--python", "3.12", venv_path], cwd=cape_root, timeout=120, env=uv_env)
             result = self._cmd.run(
-                [uv_bin, "sync", "--python", "3.12", "--no-install-project"],
+                [uv_bin, "sync", "-v", "--python", "3.12", "--no-install-project"],
                 cwd=cape_root,
                 timeout=1800,
                 live_output=True,
@@ -225,7 +225,7 @@ class RemediationEngine:
                 req_file = os.path.join(cape_root, "requirements.txt")
                 if os.path.isfile(req_file):
                     result = self._cmd.run(
-                        [uv_bin, "pip", "install", "--python", venv_py, "-r", "requirements.txt"],
+                        [uv_bin, "pip", "install", "-v", "--python", venv_py, "-r", "requirements.txt"],
                         cwd=cape_root,
                         timeout=1800,
                         live_output=True,
@@ -233,7 +233,7 @@ class RemediationEngine:
                     )
                 if not result.success:
                     result = self._cmd.run(
-                        [uv_bin, "pip", "install", "--python", venv_py, "-e", "."],
+                        [uv_bin, "pip", "install", "-v", "--python", venv_py, "-e", "."],
                         cwd=cape_root,
                         timeout=1800,
                         live_output=True,

@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from cape_auto.command import CommandRunner, CommandResult
+from cape_auto.command import CommandRunner, CommandResult, LiveProgressTracker
 from cape_auto.exceptions import CommandError
 
 
@@ -58,6 +58,47 @@ class TestCommand(unittest.TestCase):
         self.assertTrue(res.timed_out)
         self.assertFalse(res.success)
         self.assertIn("timed out", res.stderr.lower())
+
+    def test_live_output_execution(self):
+        script = "import sys\nprint('line1')\nprint('line2')\n"
+        res = self.runner.run(
+            [sys.executable, "-c", script],
+            live_output=True,
+        )
+        self.assertTrue(res.success)
+        self.assertIn("line1", res.stdout)
+        self.assertIn("line2", res.stdout)
+
+    def test_live_output_timeout(self):
+        res = self.runner.run(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            live_output=True,
+            timeout=1,
+        )
+        self.assertTrue(res.timed_out)
+        self.assertFalse(res.success)
+        self.assertIn("timed out", res.stderr.lower())
+
+    def test_live_progress_tracker(self):
+        tracker = LiveProgressTracker("uv sync -v --python 3.12")
+        self.assertIsNone(tracker.pct)
+        self.assertIn("dependencies", tracker.current_activity.lower())
+
+        # Test wave progress bar
+        bar_wave = tracker.render_bar(5)
+        self.assertIn("elapsed", bar_wave)
+
+        # Update resolution
+        tracker.update_from_line("Resolved 100 packages in 12ms")
+        self.assertEqual(tracker.total_items, 100)
+
+        # Update packages installed
+        tracker.update_from_line("Installed django==4.2")
+        self.assertEqual(tracker.completed_items, 1)
+        self.assertEqual(tracker.pct, 1.0)
+        bar_pct = tracker.render_bar(10)
+        self.assertIn("1/100 pkgs", bar_pct)
+        self.assertIn("1%", bar_pct)
 
 
 if __name__ == "__main__":

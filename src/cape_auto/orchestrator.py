@@ -1416,7 +1416,7 @@ class Orchestrator:
 
             logger.info("Syncing CAPEv2 dependencies into Python 3.12 environment...")
             result = self._cmd.run_as_user(
-                [uv_bin, "sync", "--python", "3.12", "--no-install-project"],
+                [uv_bin, "sync", "-v", "--python", "3.12", "--no-install-project"],
                 user=cape_user,
                 cwd=cape_root,
                 timeout=1800,
@@ -1430,7 +1430,7 @@ class Orchestrator:
                 req_file = os.path.join(cape_root, "requirements.txt")
                 if os.path.isfile(req_file):
                     result = self._cmd.run_as_user(
-                        [uv_bin, "pip", "install", "--python", venv_python, "-r", "requirements.txt"],
+                        [uv_bin, "pip", "install", "-v", "--python", venv_python, "-r", "requirements.txt"],
                         user=cape_user,
                         cwd=cape_root,
                         timeout=1800,
@@ -1439,7 +1439,7 @@ class Orchestrator:
                     )
                 if not result.success:
                     result = self._cmd.run_as_user(
-                        [uv_bin, "pip", "install", "--python", venv_python, "-e", "."],
+                        [uv_bin, "pip", "install", "-v", "--python", venv_python, "-e", "."],
                         user=cape_user,
                         cwd=cape_root,
                         timeout=1800,

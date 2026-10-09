@@ -10,8 +10,10 @@ Provides safe, logged, timeout-aware command execution with:
 - Pipeline support with PIPESTATUS
 """
 import os
+import re
 import subprocess
 import time
+import threading
 import shlex
 from dataclasses import dataclass, field
 from typing import Optional
@@ -37,6 +39,106 @@ class CommandResult:
 
     def __post_init__(self):
         self.success = self.exit_code == 0 and not self.timed_out
+
+
+class LiveProgressTracker:
+    """Tracks live progress for long-running commands and renders visual ASCII progress bars."""
+
+    def __init__(self, command_str: str):
+        self.cmd = command_str.lower()
+        self.is_python_pkg = any(k in self.cmd for k in ["uv", "pip", "poetry"])
+        self.is_disk_op = any(k in self.cmd for k in ["qemu-img", "virt-install", "dd"])
+        self.is_git = "git" in self.cmd
+        self.is_apt = any(k in self.cmd for k in ["apt-get", "apt ", "dpkg"])
+        self.total_items: Optional[int] = None
+        self.completed_items: int = 0
+        self.pct: Optional[float] = None
+
+        if self.is_python_pkg:
+            self.current_activity = "Resolving & downloading dependencies..."
+        elif self.is_disk_op:
+            self.current_activity = "Processing disk image / VM storage..."
+        elif self.is_git:
+            self.current_activity = "Cloning repository..."
+        elif self.is_apt:
+            self.current_activity = "Installing system packages..."
+        else:
+            self.current_activity = "Processing..."
+
+    def update_from_line(self, raw_line: str) -> None:
+        line = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw_line).strip()
+        if not line:
+            return
+
+        # uv / poetry dependency resolution: "Resolved 142 packages in 35ms"
+        m_res = re.search(r"Resolved\s+(\d+)\s+packages", line, re.I)
+        if m_res:
+            self.total_items = int(m_res.group(1))
+            self.current_activity = f"Resolved {self.total_items} packages"
+            return
+
+        # "Installed 45 packages"
+        m_inst_count = re.search(r"Installed\s+(\d+)\s+packages", line, re.I)
+        if m_inst_count:
+            self.completed_items = int(m_inst_count.group(1))
+            if self.total_items and self.total_items > 0:
+                self.pct = (self.completed_items / self.total_items) * 100.0
+            return
+
+        # "Installed foo==1.0"
+        m_inst_single = re.search(r"Installed\s+([a-zA-Z0-9_\-\.]+)", line, re.I)
+        if m_inst_single:
+            self.completed_items += 1
+            pkg = m_inst_single.group(1)
+            self.current_activity = f"Installed {pkg}"
+            if self.total_items and self.total_items > 0:
+                self.pct = (self.completed_items / self.total_items) * 100.0
+            return
+
+        # "Downloading yara-python" / "Building yara-python" / "Prepared yara-python"
+        m_dl = re.search(r"(Downloading|Building|Prepared|Auditing)\s+([a-zA-Z0-9_\-\.]+)", line, re.I)
+        if m_dl:
+            act, pkg = m_dl.group(1), m_dl.group(2)
+            self.current_activity = f"{act} {pkg}"
+            return
+
+        # git clone progress: "Receiving objects:  45% (1234/2742)"
+        m_git = re.search(r"Receiving objects:\s+(\d+)%", line, re.I)
+        if m_git:
+            self.pct = float(m_git.group(1))
+            self.current_activity = "Cloning git objects"
+            return
+
+        # qemu-img convert progress: "(45.20/100%)"
+        m_qemu = re.search(r"\((\d+(?:\.\d+)?)%\)", line)
+        if m_qemu:
+            self.pct = float(m_qemu.group(1))
+            self.current_activity = "Converting disk image"
+            return
+
+        m_pct_generic = re.search(r"\b(\d{1,3})%\b", line)
+        if m_pct_generic:
+            val = float(m_pct_generic.group(1))
+            if 0 <= val <= 100:
+                self.pct = val
+
+    def render_bar(self, elapsed_s: int, width: int = 18) -> str:
+        if self.pct is not None:
+            pct_val = max(0.0, min(100.0, self.pct))
+            filled = int(width * (pct_val / 100.0))
+            bar = "#" * filled + "-" * (width - filled)
+            if self.total_items and self.total_items > 0:
+                stats = f" {self.completed_items}/{self.total_items} pkgs ({int(pct_val)}%)"
+            else:
+                stats = f" {int(pct_val)}%"
+            return f"[{bar}]{stats} | {self.current_activity} | {elapsed_s}s elapsed"
+        else:
+            pulse = (elapsed_s // 2) % width
+            bar_chars = ["-"] * width
+            for i in range(4):
+                bar_chars[(pulse + i) % width] = "#"
+            bar = "".join(bar_chars)
+            return f"[{bar}] {self.current_activity} | {elapsed_s}s elapsed"
 
 
 class CommandRunner:
@@ -158,23 +260,58 @@ class CommandRunner:
                     cwd=cwd,
                     env=run_env,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Merge stderr (where uv, pip, git stream progress) into stdout
                     text=True,
                     bufsize=1,
                 )
+                tracker = LiveProgressTracker(log_cmd)
                 stdout_lines = []
-                while True:
-                    line = proc.stdout.readline()
-                    if not line and proc.poll() is not None:
-                        break
-                    if line:
-                        stdout_lines.append(line)
-                        line_stripped = line.rstrip()
-                        if line_stripped and not sensitive:
-                            logger.info(f"  │ {line_stripped}")
-                stderr = proc.stderr.read() or ""
+                done_event = threading.Event()
+
+                def _heartbeat():
+                    while not done_event.wait(5.0):
+                        elapsed_s = int(time.monotonic() - start_time)
+                        if timeout and (time.monotonic() - start_time) > timeout:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                            break
+                        logger.info(f"  │ ⏳ [PROGRESS] {tracker.render_bar(elapsed_s)}")
+
+                hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+                hb_thread.start()
+
+                try:
+                    while True:
+                        if timeout and (time.monotonic() - start_time) > timeout:
+                            timed_out = True
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                            break
+                        line = proc.stdout.readline()
+                        if not line and proc.poll() is not None:
+                            break
+                        if line:
+                            stdout_lines.append(line)
+                            line_stripped = line.rstrip()
+                            if line_stripped:
+                                tracker.update_from_line(line_stripped)
+                                if not sensitive:
+                                    clean_line = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", line_stripped)
+                                    logger.info(f"  │ {clean_line}")
+                finally:
+                    done_event.set()
+
                 stdout = "".join(stdout_lines)
-                exit_code = proc.returncode
+                exit_code = -1 if timed_out else proc.returncode
+                if timed_out:
+                    stderr = f"Command timed out after {timeout}s: {stdout}"
+                    logger.error(f"  TIMEOUT after {timeout}s: {log_cmd}")
+                else:
+                    stderr = stdout if exit_code != 0 else ""
             else:
                 proc = subprocess.run(
                     command if not shell else cmd_str,
