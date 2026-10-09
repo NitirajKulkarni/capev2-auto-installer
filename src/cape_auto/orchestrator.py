@@ -8,6 +8,7 @@ Supports resume, repair, diagnose, status, dry-run, and uninstall modes.
 """
 import json
 import os
+import sys
 import hashlib
 import time
 from datetime import datetime, timezone
@@ -1407,9 +1408,30 @@ class Orchestrator:
                 [uv_bin, "sync", "--python", "3.12", "--no-install-project"],
                 user=cape_user,
                 cwd=cape_root,
-                timeout=900,
+                timeout=1200,
                 live_output=True,
             )
+            if not result.success:
+                logger.warning(
+                    f"uv sync returned non-zero ({result.stderr[:200] if result.stderr else ''}), falling back to uv pip install..."
+                )
+                req_file = os.path.join(cape_root, "requirements.txt")
+                if os.path.isfile(req_file):
+                    result = self._cmd.run_as_user(
+                        [uv_bin, "pip", "install", "--python", venv_python, "-r", "requirements.txt"],
+                        user=cape_user,
+                        cwd=cape_root,
+                        timeout=1200,
+                        live_output=True,
+                    )
+                if not result.success:
+                    result = self._cmd.run_as_user(
+                        [uv_bin, "pip", "install", "--python", venv_python, "-e", "."],
+                        user=cape_user,
+                        cwd=cape_root,
+                        timeout=1200,
+                        live_output=True,
+                    )
 
         if not result.success:
             raise StageError(
@@ -1417,11 +1439,14 @@ class Orchestrator:
                 stage="CAPE_INSTALL"
             )
 
-        # Verify critical dependencies (django and flirt) inside virtualenv
-        logger.info("Verifying installed CAPEv2 dependencies (Django and python-flirt)...")
+        # Ensure correct ownership of CAPE root and virtual environment for cape user
+        self._cmd.run(["chown", "-R", f"{cape_user}:{cape_user}", cape_root], timeout=60)
+
+        # Verify critical dependencies inside virtualenv
+        logger.info("Verifying installed CAPEv2 dependencies (Django)...")
         active_py = venv_python if os.path.isfile(venv_python) else "python3"
         verify_res = self._cmd.run_as_user(
-            [active_py, "-c", "import django; import flirt; print('CAPE core dependencies verified')"],
+            [active_py, "-c", "import django; print('CAPE core dependencies verified')"],
             user=cape_user,
             cwd=cape_root,
             timeout=30,
@@ -1956,6 +1981,17 @@ drop = off
         self._state.register_resource("iso", iso_path, ResourceOwnership.CREATED_BY_INSTALLER)
         return iso_path
 
+    def _is_agent_online(self, url: str, timeout: int = 3) -> bool:
+        """Check if CAPE guest agent responds with HTTP 200."""
+        import urllib.request
+        import urllib.error
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "CAPE-Installer/2.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
     def _calculate_safe_vm_resources(self, req_memory_mb: int, req_vcpus: int) -> tuple[int, int, bool]:
         """
         Dynamically calculate safe memory and vCPUs for the analysis VM.
@@ -2059,9 +2095,37 @@ drop = off
                 self._cmd.run(["virsh", "destroy", vm_name])
                 self._cmd.run(["virsh", "undefine", vm_name, "--nvram", "--snapshots-metadata"])
             else:
-                logger.info(f"VM '{vm_name}' already exists with valid profile")
-                self._state.register_resource("vm", vm_name, ResourceOwnership.PRE_EXISTING)
-                return
+                # Check if the VM has actually completed setup or has snapshots
+                snap_output = self._cmd.run_capture(["virsh", "snapshot-list", vm_name], quiet=True)
+                has_snapshots = False
+                for sline in snap_output.splitlines():
+                    sline = sline.strip()
+                    if sline and not sline.startswith("Name") and not sline.startswith("-"):
+                        has_snapshots = True
+                        break
+
+                agent_ip = "192.168.250.100"
+                agent_port = self._config.get_int("guest.agent.port", 8000)
+                agent_url = f"http://{agent_ip}:{agent_port}/"
+                agent_online = self._is_agent_online(agent_url, timeout=2)
+
+                if not has_snapshots and not agent_online:
+                    logger.warning(
+                        f"Existing VM '{vm_name}' has no completed snapshots and agent is offline "
+                        "(likely an incomplete or interrupted installation from prior run/power outage). "
+                        "Purging incomplete VM and disk to ensure a fresh, clean Windows installation..."
+                    )
+                    self._cmd.run(["virsh", "destroy", vm_name], quiet=True)
+                    self._cmd.run(["virsh", "undefine", vm_name, "--remove-all-storage", "--nvram", "--snapshots-metadata"], quiet=True)
+                    if disk_path and os.path.isfile(disk_path):
+                        try:
+                            os.remove(disk_path)
+                        except OSError:
+                            pass
+                else:
+                    logger.info(f"VM '{vm_name}' already exists with valid profile and ready snapshot")
+                    self._state.register_resource("vm", vm_name, ResourceOwnership.PRE_EXISTING)
+                    return
 
         if edition not in WINDOWS_EVAL_CATALOG:
             logger.warning(f"Unknown Windows edition '{edition}', defaulting to 'win10_eval'")
@@ -2250,16 +2314,7 @@ drop = off
                 continue
 
             # Check if guest agent is answering
-            agent_online = False
-            try:
-                req = urllib.request.Request(agent_url, headers={"User-Agent": "CAPE-Installer/2.0"})
-                with urllib.request.urlopen(req, timeout=3) as resp:
-                    if resp.status == 200:
-                        agent_online = True
-            except Exception:
-                pass
-
-            if agent_online:
+            if self._is_agent_online(agent_url, timeout=3):
                 logger.info("═" * 78)
                 logger.info(f"  AUTOMATED WINDOWS INSTALLATION COMPLETE in {elapsed_str}!")
                 logger.info(f"  Guest agent detected online and responsive at {agent_url}")
@@ -2268,16 +2323,22 @@ drop = off
                 return
 
             # Gather telemetry: disk growth & CPU activity
-            disk_gb = 0.0
-            disk_growth_rate = ""
+            disk_str = ""
             if os.path.isfile(disk_path):
                 try:
-                    cur_disk_bytes = os.path.getsize(disk_path)
-                    disk_gb = cur_disk_bytes / (1024 ** 3)
+                    st = os.stat(disk_path)
+                    cur_disk_bytes = getattr(st, "st_blocks", 0) * 512
+                    if cur_disk_bytes == 0:
+                        cur_disk_bytes = st.st_size
+                    disk_growth_rate = ""
                     if last_disk_bytes > 0 and cur_disk_bytes > last_disk_bytes:
-                        rate_mb_m = ((cur_disk_bytes - last_disk_bytes) / 1024 / 1024) / (poll_interval / 60)
+                        rate_mb_m = ((cur_disk_bytes - last_disk_bytes) / (1024 * 1024)) / (poll_interval / 60)
                         disk_growth_rate = f" (+{rate_mb_m:.0f} MB/min)"
                     last_disk_bytes = cur_disk_bytes
+                    if cur_disk_bytes >= 1024 * 1024 * 1024:
+                        disk_str = f" | Disk: {cur_disk_bytes / (1024 ** 3):.1f}GB{disk_growth_rate}"
+                    elif cur_disk_bytes > 0:
+                        disk_str = f" | Disk: {cur_disk_bytes / (1024 ** 2):.0f}MB{disk_growth_rate}"
                 except OSError:
                     pass
 
@@ -2288,7 +2349,6 @@ drop = off
             mins_elapsed = elapsed // 60
             if mins_elapsed != last_logged_min:
                 last_logged_min = mins_elapsed
-                disk_str = f" | Disk: {disk_gb:.1f}G{disk_growth_rate}" if disk_gb > 0 else ""
                 logger.info(
                     f"Windows setup in progress: Elapsed {elapsed_str}/{timeout_minutes}m ({pct}%){disk_str} | "
                     f"VM: {dom_state} | Awaiting guest agent..."

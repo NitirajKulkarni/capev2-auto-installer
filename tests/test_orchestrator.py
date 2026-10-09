@@ -273,8 +273,41 @@ enabled = false
         self.assertIn(["virsh", "destroy", "cape-win"], calls)
         self.assertIn(["virsh", "undefine", "cape-win", "--nvram", "--snapshots-metadata"], calls)
 
+    def test_stage_vm_create_purges_incomplete_vm_without_snapshots(self):
+        from unittest.mock import MagicMock, patch
+
+        self.orchestrator._config.set("guest.enabled", True)
+        mock_cmd = MagicMock()
+        mock_cmd.run_capture.side_effect = lambda cmd, **kw: (
+            "cape-win\n" if "list" in cmd and "--all" in cmd
+            else ("" if "snapshot-list" in cmd else "<domain><features></features></domain>")
+        )
+        self.orchestrator._cmd = mock_cmd
+
+        with patch.object(self.orchestrator, "_is_agent_online", return_value=False), \
+             patch.object(self.orchestrator, "_download_windows_eval_iso", side_effect=StopIteration):
+            try:
+                self.orchestrator._stage_vm_create()
+            except StopIteration:
+                pass
+
+        calls = [c[0][0] for c in mock_cmd.run.call_args_list]
+        self.assertIn(["virsh", "destroy", "cape-win"], calls)
+        self.assertIn(["virsh", "undefine", "cape-win", "--remove-all-storage", "--nvram", "--snapshots-metadata"], calls)
+
+    def test_stage_cape_install_execution(self):
+        from unittest.mock import MagicMock
+        from cape_auto.command import CommandResult
+
+        mock_cmd = MagicMock()
+        mock_cmd.run.return_value = CommandResult(command="uv", exit_code=0, stdout="uv 0.4.0", stderr="", duration=0.1)
+        mock_cmd.run_as_user.return_value = CommandResult(command="uv", exit_code=0, stdout="Success", stderr="", duration=0.1)
+        self.orchestrator._cmd = mock_cmd
+
+        # Calling _stage_cape_install must complete without NameError (e.g. sys) or crash
+        self.orchestrator._stage_cape_install()
+        self.assertEqual(self.orchestrator._state.get_manifest().get("python_manager"), "uv")
+
 
 if __name__ == "__main__":
     unittest.main()
-
-

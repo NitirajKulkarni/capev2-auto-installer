@@ -6,6 +6,8 @@ Each remediation has risk level, prerequisites, commands, verification, and roll
 """
 from dataclasses import dataclass, field
 from enum import Enum
+import os
+import sys
 from typing import Optional, Callable
 
 from cape_auto.command import CommandRunner
@@ -203,12 +205,31 @@ class RemediationEngine:
             logger.info("Using uv for environment repair (pinning Python 3.12 for python-flirt / django)")
             self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300)
             venv_path = os.path.join(cape_root, ".venv")
+            venv_py = os.path.join(venv_path, "bin", "python")
             self._cmd.run([uv_bin, "venv", "--python", "3.12", venv_path], cwd=cape_root, timeout=120)
             result = self._cmd.run(
                 [uv_bin, "sync", "--python", "3.12", "--no-install-project"],
                 cwd=cape_root,
-                timeout=600,
+                timeout=1200,
+                live_output=True,
             )
+            if not result.success:
+                logger.warning(f"uv sync returned non-zero, falling back to uv pip install: {result.stderr[:200]}")
+                req_file = os.path.join(cape_root, "requirements.txt")
+                if os.path.isfile(req_file):
+                    result = self._cmd.run(
+                        [uv_bin, "pip", "install", "--python", venv_py, "-r", "requirements.txt"],
+                        cwd=cape_root,
+                        timeout=1200,
+                        live_output=True,
+                    )
+                if not result.success:
+                    result = self._cmd.run(
+                        [uv_bin, "pip", "install", "--python", venv_py, "-e", "."],
+                        cwd=cape_root,
+                        timeout=1200,
+                        live_output=True,
+                    )
         elif poetry_bin:
             logger.info("Using poetry for environment repair")
             py_exec = "python3.12" if self._cmd.run(["which", "python3.12"]).success else "python3.11"
@@ -216,11 +237,15 @@ class RemediationEngine:
             result = self._cmd.run(
                 [poetry_bin, "install"],
                 cwd=cape_root,
-                timeout=600,
+                timeout=1200,
+                live_output=True,
             )
         else:
             logger.error("Neither poetry nor uv found - cannot repair Python env")
             return False
+
+        # Ensure correct ownership for cape service user
+        self._cmd.run(["chown", "-R", "cape:cape", cape_root], timeout=60)
 
         if result.success:
             venv_py = os.path.join(cape_root, ".venv", "bin", "python")
