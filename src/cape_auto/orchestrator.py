@@ -1466,10 +1466,27 @@ class Orchestrator:
             timeout=30,
         )
         if not verify_res.success:
-            raise StageError(
-                f"CAPE Python environment verification failed. Essential packages missing: {verify_res.stderr.strip()}",
-                stage="CAPE_INSTALL"
+            logger.warning("Django verification failed in virtualenv. Attempting direct auto-repair with uv...")
+            if python_mgr == "uv":
+                self._cmd.run_as_user(
+                    [uv_bin, "pip", "install", "-v", "--python", venv_python, "django", "requests"],
+                    user=cape_user,
+                    cwd=cape_root,
+                    timeout=600,
+                    live_output=True,
+                    env=uv_env,
+                )
+            verify_res = self._cmd.run_as_user(
+                [active_py, "-c", "import django; print('CAPE core dependencies verified')"],
+                user=cape_user,
+                cwd=cape_root,
+                timeout=30,
             )
+            if not verify_res.success:
+                raise StageError(
+                    f"CAPE Python environment verification failed. Essential packages missing: {verify_res.stderr.strip()}",
+                    stage="CAPE_INSTALL"
+                )
 
         # Verify Python environment version
         py_check = self._cmd.run_as_user(
@@ -1663,13 +1680,89 @@ drop = off
         if os.path.isfile(installer):
             self._cmd.run(["bash", installer, "systemd"], timeout=300)
 
-        # Verify services exist
-        for svc in ["cape", "cape-processor", "cape-web", "cape-rooter"]:
+        # Ensure all service units exist and point to the virtual environment
+        venv_py = os.path.join(cape_root, ".venv", "bin", "python")
+        py_bin = venv_py if os.path.isfile(venv_py) else "/usr/bin/python3"
+
+        units = {
+            "cape-rooter": f"""[Unit]
+Description=CAPE Rooter Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart={py_bin} {cape_root}/utils/rooter.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+""",
+            "cape": f"""[Unit]
+Description=CAPE Sandbox Service
+After=network.target mongodb.service postgresql.service cape-rooter.service
+
+[Service]
+Type=simple
+User={cape_user}
+Group={cape_user}
+WorkingDirectory={cape_root}
+ExecStart={py_bin} {cape_root}/cuckoo.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+""",
+            "cape-processor": f"""[Unit]
+Description=CAPE Processing Engine
+After=network.target mongodb.service postgresql.service cape.service
+
+[Service]
+Type=simple
+User={cape_user}
+Group={cape_user}
+WorkingDirectory={cape_root}
+ExecStart={py_bin} {cape_root}/cuckoo.py -d -m 4
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+""",
+            "cape-web": f"""[Unit]
+Description=CAPE Web Interface
+After=network.target mongodb.service postgresql.service cape.service
+
+[Service]
+Type=simple
+User={cape_user}
+Group={cape_user}
+WorkingDirectory={cape_root}/web
+ExecStart={py_bin} manage.py runserver 0.0.0.0:8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+""",
+        }
+
+        for svc, unit_content in units.items():
+            unit_file = f"/etc/systemd/system/{svc}.service"
             exists = self._cmd.run(["systemctl", "cat", f"{svc}.service"])
-            if exists.success:
-                self._state.register_resource(
-                    "systemd_unit", svc, ResourceOwnership.CREATED_BY_INSTALLER
-                )
+            if not exists.success:
+                try:
+                    with open(unit_file, "w", encoding="utf-8") as f:
+                        f.write(unit_content)
+                    self._state.register_resource("systemd_unit", svc, ResourceOwnership.CREATED_BY_INSTALLER)
+                    logger.info(f"Synthesized systemd unit: {svc}.service")
+                except Exception as e:
+                    logger.debug(f"Could not write {unit_file}: {e}")
+            else:
+                self._state.register_resource("systemd_unit", svc, ResourceOwnership.CREATED_BY_INSTALLER)
                 logger.info(f"Service {svc}: installed")
 
         self._cmd.run(["systemctl", "daemon-reload"])
@@ -2510,6 +2603,9 @@ drop = off
             status = check.stdout.strip()
             logger.info(f"Service {svc}: {status}")
 
+        # Create desktop shortcut and launcher
+        self._create_desktop_shortcuts()
+
     def _stage_health_check(self) -> None:
         """Run comprehensive health checks."""
         results = self._diag.diagnose_all()
@@ -2556,11 +2652,184 @@ drop = off
             logger.warning("CAPE web interface not responding (may still be starting)")
 
     def _stage_finalize(self) -> None:
-        """Final report and cleanup."""
+        """Final report, desktop shortcut creation, and cleanup."""
+        self._create_desktop_shortcuts()
         self._reporter.generate_final_report(
             self._state.is_complete() or not self._state.get_failed_stages()
         )
         logger.info("Installation finalized. See reports/ for details.")
+
+    def _create_desktop_shortcuts(self) -> None:
+        """Create desktop shortcuts, application launchers, and CLI management scripts."""
+        logger.info("Setting up CAPEv2 desktop shortcut on home screen...")
+
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+
+        # 1. Launcher script: /usr/local/bin/cape-launch
+        launcher_script = f"""#!/usr/bin/env bash
+# CAPEv2 Automated Desktop Launcher
+# Starts CAPEv2 services if not running, waits for web interface, and opens browser.
+
+set -e
+
+# Start services if inactive
+for svc in cape-rooter cape-web cape-processor cape; do
+    if ! systemctl is-active --quiet "${{svc}}.service" 2>/dev/null; then
+        echo "Starting ${{svc}} service..."
+        sudo systemctl start "${{svc}}.service" 2>/dev/null || systemctl start "${{svc}}.service" 2>/dev/null || true
+    fi
+done
+
+# Wait up to 15 seconds for web interface to respond
+echo "Checking CAPEv2 web interface at http://127.0.0.1:8000..."
+for i in $(seq 1 15); do
+    if curl -s -o /dev/null --connect-timeout 1 http://127.0.0.1:8000 2>/dev/null; then
+        echo "CAPEv2 Web interface is online!"
+        break
+    fi
+    sleep 1
+done
+
+# Launch browser
+URL="http://127.0.0.1:8000"
+if [ -n "${{DISPLAY:-}}" ] || [ -n "${{WAYLAND_DISPLAY:-}}" ]; then
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -i /usr/share/icons/hicolor/scalable/apps/capev2.svg "CAPEv2 Sandbox" "Opening Web Interface at ${{URL}}" 2>/dev/null || true
+    fi
+    xdg-open "$URL" 2>/dev/null || x-www-browser "$URL" 2>/dev/null || firefox "$URL" 2>/dev/null || google-chrome "$URL" 2>/dev/null &
+else
+    echo "CAPEv2 Sandbox is running at: $URL"
+fi
+"""
+        launcher_path = "/usr/local/bin/cape-launch"
+        try:
+            with open(launcher_path, "w", encoding="utf-8") as f:
+                f.write(launcher_script)
+            os.chmod(launcher_path, 0o755)
+            # Symlinks
+            for alias in ["cape-start", "cape-web"]:
+                alias_path = f"/usr/local/bin/{alias}"
+                if os.path.islink(alias_path) or os.path.exists(alias_path):
+                    try:
+                        os.unlink(alias_path)
+                    except Exception:
+                        pass
+                try:
+                    os.symlink(launcher_path, alias_path)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"Could not create /usr/local/bin/cape-launch: {e}")
+
+        # 2. Helper CLI scripts: /usr/local/bin/cape-stop, /usr/local/bin/cape-status
+        stop_script = """#!/usr/bin/env bash
+echo "Stopping CAPEv2 services..."
+sudo systemctl stop cape cape-processor cape-web cape-rooter 2>/dev/null || systemctl stop cape cape-processor cape-web cape-rooter 2>/dev/null || true
+echo "CAPEv2 services stopped."
+"""
+        status_script = """#!/usr/bin/env bash
+echo "=== CAPEv2 Service Status ==="
+systemctl status cape-rooter cape-web cape-processor cape --lines=0 2>/dev/null || true
+echo ""
+echo "=== Web Interface Check (Port 8000) ==="
+curl -s -I --connect-timeout 2 http://127.0.0.1:8000 2>/dev/null | head -n 3 || echo "Web server not responding on port 8000"
+"""
+        for s_path, s_content in [("/usr/local/bin/cape-stop", stop_script), ("/usr/local/bin/cape-status", status_script)]:
+            try:
+                with open(s_path, "w", encoding="utf-8") as f:
+                    f.write(s_content)
+                os.chmod(s_path, 0o755)
+            except Exception:
+                pass
+
+        # 3. Create SVG Icon
+        svg_icon = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e293b;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#06b6d4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bgGrad)" />
+  <path d="M64 20 L96 36 L96 72 C96 92 64 108 64 108 C64 108 32 92 32 72 L32 36 Z" fill="none" stroke="url(#cyanGrad)" stroke-width="5" stroke-linejoin="round" />
+  <path d="M64 34 L84 46 L84 68 C84 82 64 94 64 94 C64 94 44 82 44 68 L44 46 Z" fill="url(#cyanGrad)" opacity="0.3" />
+  <circle cx="64" cy="56" r="10" fill="#38bdf8" />
+  <path d="M50 78 C50 70 56 66 64 66 C72 66 78 70 78 78 Z" fill="#38bdf8" />
+  <text x="64" y="120" font-family="sans-serif" font-size="11" font-weight="bold" fill="#38bdf8" text-anchor="middle">CAPEv2</text>
+</svg>"""
+        for idir in ["/usr/share/icons/hicolor/scalable/apps", "/usr/share/pixmaps"]:
+            try:
+                os.makedirs(idir, exist_ok=True)
+                with open(os.path.join(idir, "capev2.svg"), "w", encoding="utf-8") as f:
+                    f.write(svg_icon)
+            except Exception:
+                pass
+
+        # 4. Desktop entry content
+        desktop_content = """[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CAPEv2 Sandbox
+GenericName=Malware Analysis Sandbox
+Comment=Launch CAPEv2 Malware Sandbox Web Interface
+Exec=/usr/local/bin/cape-launch
+Icon=/usr/share/icons/hicolor/scalable/apps/capev2.svg
+Terminal=false
+Categories=Security;Development;System;Network;
+StartupNotify=true
+"""
+        # System applications menu
+        try:
+            os.makedirs("/usr/share/applications", exist_ok=True)
+            with open("/usr/share/applications/capev2.desktop", "w", encoding="utf-8") as f:
+                f.write(desktop_content)
+            os.chmod("/usr/share/applications/capev2.desktop", 0o644)
+        except Exception:
+            pass
+
+        # 5. Place shortcut on user home screen / Desktops
+        desktop_candidates: list[tuple[str, str]] = []
+        desktop_candidates.append((f"/home/{cape_user}/Desktop", cape_user))
+
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and sudo_user != cape_user:
+            desktop_candidates.append((f"/home/{sudo_user}/Desktop", sudo_user))
+
+        if os.path.isdir("/home"):
+            try:
+                for uname in os.listdir("/home"):
+                    u_dir = os.path.join("/home", uname)
+                    u_desktop = os.path.join(u_dir, "Desktop")
+                    if os.path.isdir(u_dir) and (u_desktop, uname) not in desktop_candidates:
+                        desktop_candidates.append((u_desktop, uname))
+            except Exception:
+                pass
+
+        for d_path, owner in desktop_candidates:
+            try:
+                os.makedirs(d_path, exist_ok=True)
+                target_file = os.path.join(d_path, "CAPEv2.desktop")
+                with open(target_file, "w", encoding="utf-8") as f:
+                    f.write(desktop_content)
+                os.chmod(target_file, 0o755)
+
+                self._cmd.run(["chown", f"{owner}:{owner}", target_file], quiet=True)
+                self._cmd.run(["chown", f"{owner}:{owner}", d_path], quiet=True)
+
+                # Set trusted metadata for GNOME desktop
+                self._cmd.run(
+                    ["gio", "set", target_file, "metadata::trusted", "true"],
+                    user=owner,
+                    quiet=True,
+                )
+                logger.info(f"Created home screen shortcut: {target_file}")
+            except Exception as e:
+                logger.debug(f"Could not create desktop shortcut in {d_path}: {e}")
 
     # ═══════════════════════════════════════════════════════════════════
     # HELPERS

@@ -308,6 +308,10 @@ enabled = false
         self.orchestrator._stage_cape_install()
         self.assertEqual(self.orchestrator._state.get_manifest().get("python_manager"), "uv")
 
+    def test_create_desktop_shortcuts(self):
+        # Must execute cleanly without exception even without root permissions
+        self.orchestrator._create_desktop_shortcuts()
+
 
 if __name__ == "__main__":
     unittest.main()

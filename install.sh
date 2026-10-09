@@ -272,6 +272,10 @@ main() {
 
     if [[ $exit_code -eq 0 ]]; then
         log_ok "Installer completed successfully."
+        if [[ -x /usr/local/bin/cape-launch ]]; then
+            log_ok "CAPEv2 Home Screen shortcut ready! Double-click 'CAPEv2 Sandbox' on your Desktop to start."
+            log_ok "Web interface: http://127.0.0.1:8000"
+        fi
     elif [[ $exit_code -eq 42 ]]; then
         log_info "Reboot required. After reboot, run: sudo ./install.sh --resume"
     elif [[ $exit_code -eq 43 ]]; then
