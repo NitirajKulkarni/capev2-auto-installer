@@ -52,6 +52,10 @@
       </ImageInstall>
       <UserData>
         <AcceptEula>true</AcceptEula>
+        <ProductKey>
+          <Key></Key>
+          <WillShowUI>Never</WillShowUI>
+        </ProductKey>
       </UserData>
       <RunSynchronous>
         <!-- Windows 11 Hardware Requirements Bypass in WinPE -->
