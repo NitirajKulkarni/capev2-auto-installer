@@ -92,13 +92,19 @@ class TestCommand(unittest.TestCase):
         tracker.update_from_line("Resolved 100 packages in 12ms")
         self.assertEqual(tracker.total_items, 100)
 
+        # Update packages downloaded
+        tracker.update_from_line("Downloaded pillow")
+        self.assertEqual(tracker.downloaded_items, 1)
+        self.assertEqual(tracker.pct, 1.0)
+        bar_dl = tracker.render_bar(10)
+        self.assertIn("Downloaded 1/100 pkgs", bar_dl)
+
         # Update packages installed
         tracker.update_from_line("Installed django==4.2")
-        self.assertEqual(tracker.completed_items, 1)
+        self.assertEqual(tracker.installed_items, 1)
         self.assertEqual(tracker.pct, 1.0)
-        bar_pct = tracker.render_bar(10)
-        self.assertIn("1/100 pkgs", bar_pct)
-        self.assertIn("1%", bar_pct)
+        bar_inst = tracker.render_bar(15)
+        self.assertIn("Installed 1/100 pkgs", bar_inst)
 
 
 if __name__ == "__main__":

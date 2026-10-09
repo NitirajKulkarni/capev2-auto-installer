@@ -51,6 +51,8 @@ class LiveProgressTracker:
         self.is_git = "git" in self.cmd
         self.is_apt = any(k in self.cmd for k in ["apt-get", "apt ", "dpkg"])
         self.total_items: Optional[int] = None
+        self.downloaded_items: int = 0
+        self.installed_items: int = 0
         self.completed_items: int = 0
         self.pct: Optional[float] = None
 
@@ -80,19 +82,31 @@ class LiveProgressTracker:
         # "Installed 45 packages"
         m_inst_count = re.search(r"Installed\s+(\d+)\s+packages", line, re.I)
         if m_inst_count:
-            self.completed_items = int(m_inst_count.group(1))
+            self.installed_items = int(m_inst_count.group(1))
+            self.completed_items = self.installed_items
             if self.total_items and self.total_items > 0:
-                self.pct = (self.completed_items / self.total_items) * 100.0
+                self.pct = (self.installed_items / self.total_items) * 100.0
             return
 
         # "Installed foo==1.0"
         m_inst_single = re.search(r"Installed\s+([a-zA-Z0-9_\-\.]+)", line, re.I)
         if m_inst_single:
-            self.completed_items += 1
+            self.installed_items += 1
+            self.completed_items = self.installed_items
             pkg = m_inst_single.group(1)
             self.current_activity = f"Installed {pkg}"
             if self.total_items and self.total_items > 0:
-                self.pct = (self.completed_items / self.total_items) * 100.0
+                self.pct = (self.installed_items / self.total_items) * 100.0
+            return
+
+        # "Downloaded foo"
+        m_dl_done = re.search(r"Downloaded\s+([a-zA-Z0-9_\-\.]+)", line, re.I)
+        if m_dl_done:
+            self.downloaded_items += 1
+            pkg = m_dl_done.group(1)
+            self.current_activity = f"Downloaded {pkg}"
+            if self.total_items and self.total_items > 0 and self.installed_items == 0:
+                self.pct = (self.downloaded_items / self.total_items) * 100.0
             return
 
         # "Downloading yara-python" / "Building yara-python" / "Prepared yara-python"
@@ -128,7 +142,10 @@ class LiveProgressTracker:
             filled = int(width * (pct_val / 100.0))
             bar = "#" * filled + "-" * (width - filled)
             if self.total_items and self.total_items > 0:
-                stats = f" {self.completed_items}/{self.total_items} pkgs ({int(pct_val)}%)"
+                if self.installed_items > 0:
+                    stats = f" Installed {self.installed_items}/{self.total_items} pkgs ({int(pct_val)}%)"
+                else:
+                    stats = f" Downloaded {self.downloaded_items}/{self.total_items} pkgs ({int(pct_val)}%)"
             else:
                 stats = f" {int(pct_val)}%"
             return f"[{bar}]{stats} | {self.current_activity} | {elapsed_s}s elapsed"
