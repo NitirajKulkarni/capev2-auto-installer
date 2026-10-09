@@ -904,12 +904,39 @@ class Orchestrator:
     # INDIVIDUAL STAGE IMPLEMENTATIONS
     # ═══════════════════════════════════════════════════════════════════
 
+    def _optimize_network_stack(self) -> None:
+        """
+        Optimize Linux networking resolver for high-speed downloads.
+        Prioritizes IPv4 over IPv6 in /etc/gai.conf to eliminate 10s socket connect timeouts
+        when running inside hypervisors (VMware/VirtualBox/KVM) with IPv4-only NAT.
+        """
+        try:
+            gai_conf = "/etc/gai.conf"
+            target_line = "precedence ::ffff:0:0/96  100\n"
+            if os.path.isfile(gai_conf):
+                with open(gai_conf, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if "precedence ::ffff:0:0/96  100" not in content and "precedence ::ffff:0:0/96 100" not in content:
+                    if "#precedence ::ffff:0:0/96  100" in content:
+                        content = content.replace("#precedence ::ffff:0:0/96  100", "precedence ::ffff:0:0/96  100")
+                    elif "#precedence ::ffff:0:0/96 100" in content:
+                        content = content.replace("#precedence ::ffff:0:0/96 100", "precedence ::ffff:0:0/96  100")
+                    else:
+                        content += f"\n{target_line}"
+                    with open(gai_conf, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    logger.info("Optimized /etc/gai.conf: prioritized IPv4 to eliminate IPv6 NAT timeouts")
+        except Exception as e:
+            logger.debug(f"Could not adjust /etc/gai.conf: {e}")
+
     def _stage_preflight(self) -> None:
         """Comprehensive environment detection and validation."""
+        self._optimize_network_stack()
         self._run_preflight(report_only=False)
 
     def _run_preflight(self, report_only: bool = False) -> int:
         """Run preflight checks. Returns 0 on pass, 1 on fail."""
+        self._optimize_network_stack()
         logger.info("Running preflight checks...")
         issues: list[str] = []
         warnings: list[str] = []
@@ -1391,10 +1418,12 @@ class Orchestrator:
 
             uv_bin = "/usr/local/bin/uv" if os.path.isfile("/usr/local/bin/uv") else "uv"
 
+            self._optimize_network_stack()
             uv_env = {
                 "UV_HTTP_TIMEOUT": "300",
+                "UV_HTTP_CONNECT_TIMEOUT": "30",
                 "UV_HTTP_RETRIES": "5",
-                "UV_CONCURRENT_DOWNLOADS": "4",
+                "UV_CONCURRENT_DOWNLOADS": "8",
             }
 
             # Pin to Python 3.12: uv manages Python versions standalone

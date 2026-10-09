@@ -258,10 +258,22 @@ main() {
 
     ensure_python
 
-    # Optimize uv network parameters for large wheels over VM NAT
+    # Optimize network stack: prioritize IPv4 to eliminate 10s IPv6 connect timeouts on VM NAT
+    if [[ -f /etc/gai.conf ]]; then
+        if ! grep -qE '^precedence\s+::ffff:0:0/96\s+100' /etc/gai.conf 2>/dev/null; then
+            sed -i 's/^#precedence ::ffff:0:0\/96  100/precedence ::ffff:0:0\/96  100/' /etc/gai.conf 2>/dev/null || true
+            if ! grep -qE '^precedence\s+::ffff:0:0/96\s+100' /etc/gai.conf 2>/dev/null; then
+                echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf 2>/dev/null || true
+            fi
+            log_info "Configured /etc/gai.conf to prioritize IPv4 (eliminating IPv6 NAT connect timeouts)."
+        fi
+    fi
+
+    # Optimize uv network parameters for full bandwidth utilization over VM NAT
     export UV_HTTP_TIMEOUT=300
+    export UV_HTTP_CONNECT_TIMEOUT=30
     export UV_HTTP_RETRIES=5
-    export UV_CONCURRENT_DOWNLOADS=4
+    export UV_CONCURRENT_DOWNLOADS=8
 
     # Delegate to Python orchestrator
     log_info "Launching Python orchestrator..."
