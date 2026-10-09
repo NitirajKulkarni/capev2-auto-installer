@@ -203,15 +203,22 @@ class RemediationEngine:
 
         if uv_bin:
             logger.info("Using uv for environment repair (pinning Python 3.12 for python-flirt / django)")
-            self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300)
+            uv_env = {
+                "UV_HTTP_TIMEOUT": "300",
+                "UV_HTTP_RETRIES": "5",
+                "UV_CONCURRENT_DOWNLOADS": "4",
+            }
+            self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300, env=uv_env)
             venv_path = os.path.join(cape_root, ".venv")
             venv_py = os.path.join(venv_path, "bin", "python")
-            self._cmd.run([uv_bin, "venv", "--python", "3.12", venv_path], cwd=cape_root, timeout=120)
+            if not os.path.isfile(venv_py):
+                self._cmd.run([uv_bin, "venv", "--clear", "--python", "3.12", venv_path], cwd=cape_root, timeout=120, env=uv_env)
             result = self._cmd.run(
                 [uv_bin, "sync", "--python", "3.12", "--no-install-project"],
                 cwd=cape_root,
-                timeout=1200,
+                timeout=1800,
                 live_output=True,
+                env=uv_env,
             )
             if not result.success:
                 logger.warning(f"uv sync returned non-zero, falling back to uv pip install: {result.stderr[:200]}")
@@ -220,15 +227,17 @@ class RemediationEngine:
                     result = self._cmd.run(
                         [uv_bin, "pip", "install", "--python", venv_py, "-r", "requirements.txt"],
                         cwd=cape_root,
-                        timeout=1200,
+                        timeout=1800,
                         live_output=True,
+                        env=uv_env,
                     )
                 if not result.success:
                     result = self._cmd.run(
                         [uv_bin, "pip", "install", "--python", venv_py, "-e", "."],
                         cwd=cape_root,
-                        timeout=1200,
+                        timeout=1800,
                         live_output=True,
+                        env=uv_env,
                     )
         elif poetry_bin:
             logger.info("Using poetry for environment repair")

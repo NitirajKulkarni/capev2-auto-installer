@@ -1391,25 +1391,37 @@ class Orchestrator:
 
             uv_bin = "/usr/local/bin/uv" if os.path.isfile("/usr/local/bin/uv") else "uv"
 
+            uv_env = {
+                "UV_HTTP_TIMEOUT": "300",
+                "UV_HTTP_RETRIES": "5",
+                "UV_CONCURRENT_DOWNLOADS": "4",
+            }
+
             # Pin to Python 3.12: uv manages Python versions standalone
             logger.info("Ensuring Python 3.12 toolchain via uv (avoids Python 3.14 / python-flirt failure)...")
-            self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300)
+            self._cmd.run([uv_bin, "python", "install", "3.12"], timeout=300, env=uv_env)
 
-            logger.info(f"Creating Python 3.12 virtual environment at {venv_dir}...")
-            self._cmd.run_as_user(
-                [uv_bin, "venv", "--python", "3.12", venv_dir],
-                user=cape_user,
-                cwd=cape_root,
-                timeout=180,
-            )
+            # Create or reuse virtual environment
+            if not os.path.isfile(venv_python):
+                logger.info(f"Creating Python 3.12 virtual environment at {venv_dir}...")
+                self._cmd.run_as_user(
+                    [uv_bin, "venv", "--clear", "--python", "3.12", venv_dir],
+                    user=cape_user,
+                    cwd=cape_root,
+                    timeout=180,
+                    env=uv_env,
+                )
+            else:
+                logger.info(f"Using existing Python 3.12 virtual environment at {venv_dir}")
 
             logger.info("Syncing CAPEv2 dependencies into Python 3.12 environment...")
             result = self._cmd.run_as_user(
                 [uv_bin, "sync", "--python", "3.12", "--no-install-project"],
                 user=cape_user,
                 cwd=cape_root,
-                timeout=1200,
+                timeout=1800,
                 live_output=True,
+                env=uv_env,
             )
             if not result.success:
                 logger.warning(
@@ -1421,16 +1433,18 @@ class Orchestrator:
                         [uv_bin, "pip", "install", "--python", venv_python, "-r", "requirements.txt"],
                         user=cape_user,
                         cwd=cape_root,
-                        timeout=1200,
+                        timeout=1800,
                         live_output=True,
+                        env=uv_env,
                     )
                 if not result.success:
                     result = self._cmd.run_as_user(
                         [uv_bin, "pip", "install", "--python", venv_python, "-e", "."],
                         user=cape_user,
                         cwd=cape_root,
-                        timeout=1200,
+                        timeout=1800,
                         live_output=True,
+                        env=uv_env,
                     )
 
         if not result.success:

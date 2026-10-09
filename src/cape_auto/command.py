@@ -276,13 +276,20 @@ class CommandRunner:
         self,
         command: list[str] | str,
         user: str,
+        env: Optional[dict[str, str]] = None,
         **kwargs,
     ) -> CommandResult:
-        """Run a command as a specific user via sudo -u."""
+        """Run a command as a specific user via sudo -u, preserving environment variables."""
+        env_dict = kwargs.pop("env", None) or env
+        env_args = [f"{k}={v}" for k, v in env_dict.items()] if env_dict else []
         if isinstance(command, list):
-            full_cmd = ["sudo", "-u", user, "--"] + command
+            if env_args:
+                full_cmd = ["sudo", "-u", user, "--", "env"] + env_args + command
+            else:
+                full_cmd = ["sudo", "-u", user, "--"] + command
         else:
-            full_cmd = f"sudo -u {shlex.quote(user)} -- {command}"
+            env_prefix = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env_dict.items()) + " " if env_dict else ""
+            full_cmd = f"sudo -u {shlex.quote(user)} -- {env_prefix}{command}"
             kwargs["shell"] = True
         return self.run(full_cmd, **kwargs)
 

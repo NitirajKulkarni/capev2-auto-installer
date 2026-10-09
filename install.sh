@@ -258,6 +258,11 @@ main() {
 
     ensure_python
 
+    # Optimize uv network parameters for large wheels over VM NAT
+    export UV_HTTP_TIMEOUT=300
+    export UV_HTTP_RETRIES=5
+    export UV_CONCURRENT_DOWNLOADS=4
+
     # Delegate to Python orchestrator
     log_info "Launching Python orchestrator..."
     local exit_code=0
