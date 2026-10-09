@@ -221,26 +221,26 @@ class RemediationEngine:
             req_file = os.path.join(cape_root, "requirements.txt")
             result = None
 
-            # METHOD 1: Fast wheel install from requirements.txt
+            # METHOD 1: Standard virtualenv pip with --prefer-binary
             if os.path.isfile(req_file):
-                logger.info("Repairing environment: installing production dependencies from requirements.txt...")
+                logger.info("Repairing environment: installing production dependencies via standard Python pip...")
                 result = self._cmd.run(
-                    [uv_bin, "pip", "install", "--python", venv_py, "-r", "requirements.txt"],
+                    [venv_py, "-m", "pip", "install", "--prefer-binary", "--retries", "5", "--timeout", "30", "-r", "requirements.txt"],
                     cwd=cape_root,
-                    timeout=1200,
+                    timeout=1800,
                     live_output=True,
-                    env=uv_env,
                 )
 
-            # METHOD 2: Standard virtualenv pip fallback
+            # METHOD 2: Fast wheel install fallback (uv pip)
             if not result or not result.success:
-                logger.warning("Fast wheel install encountered issues, falling back to standard virtualenv pip...")
+                logger.warning("Standard pip encountered issues, attempting uv pip wheel engine...")
                 if os.path.isfile(req_file):
                     result = self._cmd.run(
-                        [venv_py, "-m", "pip", "install", "--retries", "5", "--timeout", "120", "-r", "requirements.txt"],
+                        [uv_bin, "pip", "install", "--python", venv_py, "-r", "requirements.txt"],
                         cwd=cape_root,
-                        timeout=1800,
+                        timeout=900,
                         live_output=True,
+                        env=uv_env,
                     )
 
             # METHOD 3: uv sync fallback (production only, no dev bloat)

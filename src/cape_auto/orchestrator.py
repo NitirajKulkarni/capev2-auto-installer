@@ -906,9 +906,9 @@ class Orchestrator:
 
     def _optimize_network_stack(self) -> None:
         """
-        Optimize Linux networking resolver for high-speed downloads.
-        Prioritizes IPv4 over IPv6 in /etc/gai.conf to eliminate 10s socket connect timeouts
-        when running inside hypervisors (VMware/VirtualBox/KVM) with IPv4-only NAT.
+        Optimize Linux networking resolver and NIC offloading for high-speed downloads.
+        1. Prioritizes IPv4 over IPv6 in /etc/gai.conf to eliminate 10s socket connect timeouts.
+        2. Disables TSO/GSO/GRO on virtual NICs to prevent packet drop and 80 KB/s throttling over VM NAT.
         """
         try:
             gai_conf = "/etc/gai.conf"
@@ -928,6 +928,18 @@ class Orchestrator:
                     logger.info("Optimized /etc/gai.conf: prioritized IPv4 to eliminate IPv6 NAT timeouts")
         except Exception as e:
             logger.debug(f"Could not adjust /etc/gai.conf: {e}")
+
+        # Disable TSO/GSO on virtual interfaces to fix VMware/VirtualBox NAT throughput cap
+        try:
+            ifaces_out = self._cmd.run_capture(["ip", "-o", "link", "show"])
+            for line in ifaces_out.splitlines():
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    iface = parts[1].strip()
+                    if iface and iface != "lo" and not iface.startswith("virbr") and not iface.startswith("vnet"):
+                        self._cmd.run(["ethtool", "-K", iface, "tso", "off", "gso", "off", "gro", "off"], quiet=True)
+        except Exception as e:
+            logger.debug(f"Could not adjust NIC offload flags: {e}")
 
     def _stage_preflight(self) -> None:
         """Comprehensive environment detection and validation."""
@@ -1455,29 +1467,31 @@ class Orchestrator:
             req_file = os.path.join(cape_root, "requirements.txt")
             result = None
 
-            # METHOD 1: Direct fast wheel install from requirements.txt (fastest, production only)
+            # METHOD 1: Standard Python virtualenv pip with --prefer-binary
+            # Native Python pip uses HTTP/1.1 with urllib3 (immune to HTTP/2 NAT window stalls)
+            # and downloads binary wheels with real-time transfer telemetry.
             if os.path.isfile(req_file):
-                logger.info("Installing production CAPEv2 dependencies from requirements.txt via fast wheel engine...")
+                logger.info("Installing production CAPEv2 dependencies via standard Python pip...")
+                py_run = venv_python if os.path.isfile(venv_python) else "python3"
                 result = self._cmd.run_as_user(
-                    [uv_bin, "pip", "install", "--python", venv_python, "-r", "requirements.txt"],
+                    [py_run, "-m", "pip", "install", "--prefer-binary", "--retries", "5", "--timeout", "30", "-r", "requirements.txt"],
                     user=cape_user,
                     cwd=cape_root,
-                    timeout=1200,
+                    timeout=1800,
                     live_output=True,
-                    env=uv_env,
                 )
 
-            # METHOD 2: Standard Python virtualenv pip fallback (classic reliable method)
+            # METHOD 2: Fast wheel engine fallback (uv pip)
             if not result or not result.success:
-                logger.warning("Fast wheel install encountered issues, falling back to standard virtualenv pip...")
-                py_run = venv_python if os.path.isfile(venv_python) else "python3"
+                logger.warning("Standard pip encountered issues, attempting uv pip wheel engine...")
                 if os.path.isfile(req_file):
                     result = self._cmd.run_as_user(
-                        [py_run, "-m", "pip", "install", "--retries", "5", "--timeout", "120", "-r", "requirements.txt"],
+                        [uv_bin, "pip", "install", "--python", venv_python, "-r", "requirements.txt"],
                         user=cape_user,
                         cwd=cape_root,
-                        timeout=1800,
+                        timeout=900,
                         live_output=True,
+                        env=uv_env,
                     )
 
             # METHOD 3: Poetry fallback (if configured / available)

@@ -269,6 +269,11 @@ main() {
         fi
     fi
 
+    # Optimize network interface offloading: disable TSO/GSO to prevent 50KB/s throttling over VM NAT
+    for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v 'lo' || true); do
+        ethtool -K "$iface" tso off gso off gro off 2>/dev/null || true
+    done
+
     # Optimize uv network parameters: sequential downloads (1) prevents VM NAT buffer exhaustion
     export UV_HTTP_TIMEOUT=120
     export UV_HTTP_CONNECT_TIMEOUT=15
