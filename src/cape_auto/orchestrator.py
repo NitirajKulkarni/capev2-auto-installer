@@ -2563,7 +2563,11 @@ WantedBy=multi-user.target
         # Timeout reached
         logger.error(f"Timed out waiting for automated Windows installation after {timeout_minutes} minutes.")
         raise StageError(
-            f"Windows automated installation timed out for '{vm_name}'. Check VM console using: virt-viewer {vm_name} or virt-manager",
+            f"Windows automated installation timed out for '{vm_name}'. Check VM console using: virt-viewer {vm_name} or virt-manager\n"
+            f"If you are at the Windows desktop, the background script may have failed to execute automatically.\n"
+            f"To manually configure the VM, open PowerShell as Administrator inside the guest and run:\n"
+            f"powershell -ep bypass -f D:\\setup-agent.ps1\n"
+            f"(Replace D: with your virtual CD-ROM drive letter). Then run 'sudo ./install.sh --resume' on the host.",
             stage="VM_INSTALL",
         )
 

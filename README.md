@@ -200,6 +200,24 @@ Running your Ubuntu CAPEv2 host inside VirtualBox, VMware, Hyper-V, or Proxmox? 
 
 ---
 
+## 🆘 Troubleshooting
+
+### VM Installation Timeout / "Awaiting guest agent..."
+If the installer times out with `Windows automated installation timed out` (waiting for the guest agent on port 8000), the automated `setup-agent.ps1` script may have been blocked or the OOBE (Out-of-Box Experience) may have prompted for manual input.
+
+**How to manually configure and resume:**
+1. Open the VM console: `virt-viewer -c qemu:///system cape-win`
+2. If Windows is asking for setup information (Network, Account, etc.), click through it to reach the Desktop.
+3. Open **Windows PowerShell** as **Administrator**.
+4. Run the automated agent setup script from the virtual CD-ROM (usually `D:` or `E:`):
+   ```powershell
+   powershell -ep bypass -f D:\setup-agent.ps1
+   ```
+5. Once it says `CAPE Agent listening on port 8000`, leave the VM running.
+6. On your Ubuntu host, run: `sudo ./install.sh --resume`
+
+---
+
 ## ⚙️ Configuration File (`config.toml`)
 
 Customize your deployment in [`config.toml`](config.toml). Sane, secure defaults are provided:
