@@ -1643,14 +1643,15 @@ analysis_size_limit = 134217728
         vm_ip = self._config.get_str("network.vm_ip_start", "192.168.250.100")
         snapshot = self._config.get_str("guest.snapshot_name", "cape-clean")
 
-        kvm_conf = f"""[kvm]
+kvm_conf = f"""[kvm]
 machines = {vm_name}
 interface = {cape_iface}
-dsn =
+dsn = qemu:///system
 
 [{vm_name}]
 label = {vm_name}
 platform = windows
+arch = x64
 ip = {vm_ip}
 snapshot = {snapshot}
 interface =
