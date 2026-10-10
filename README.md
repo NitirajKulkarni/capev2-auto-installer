@@ -213,6 +213,8 @@ If the installer times out with `Windows automated installation timed out` (wait
    ```powershell
    Set-ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
    ```
+   > **⚠️ Warning:** If you accidentally click inside the blue PowerShell window, Windows will enter "Select" mode and freeze the installation script! If it seems stuck on "Installing Python" for more than 1 minute, press `Esc` and `Enter` on your keyboard to unfreeze it.
+
 5. Wait for it to print `Guest configuration complete!`.
 6. On your Ubuntu host, run: `sudo ./install.sh --resume`
 
