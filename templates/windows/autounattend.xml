@@ -52,10 +52,6 @@
       </ImageInstall>
       <UserData>
         <AcceptEula>true</AcceptEula>
-        <ProductKey>
-          <Key></Key>
-          <WillShowUI>Never</WillShowUI>
-        </ProductKey>
       </UserData>
       <RunSynchronous>
         <!-- Windows 11 Hardware Requirements Bypass in WinPE -->
@@ -129,7 +125,6 @@
         <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
         <HideLocalAccountScreen>true</HideLocalAccountScreen>
-        <NetworkLocation>Work</NetworkLocation>
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
       <FirstLogonCommands>
