@@ -1824,7 +1824,7 @@ Type=simple
 User={cape_user}
 Group={cape_user}
 WorkingDirectory={cape_root}
-ExecStart={py_bin} {cape_root}/utils/process.py -auto
+ExecStart={py_bin} {cape_root}/utils/process.py auto
 Restart=always
 RestartSec=10
 
