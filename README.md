@@ -200,23 +200,32 @@ Running your Ubuntu CAPEv2 host inside VirtualBox, VMware, Hyper-V, or Proxmox? 
 
 ---
 
-## 🆘 Troubleshooting
+## ❓ FAQ & Troubleshooting
 
-### VM Installation Timeout / "Awaiting guest agent..."
-If the installer times out with `Windows automated installation timed out` (waiting for the guest agent on port 8000), the automated `setup-agent.ps1` script may have been blocked or the OOBE (Out-of-Box Experience) may have prompted for manual input.
+### Q: The installer timed out at "Awaiting guest agent...". What happened?
+The script is designed to be 100% zero-touch via `autounattend.xml`, but sometimes Windows 10/11 aggressive network checks ("Let's connect you to a network") ignore the OOBE skip commands. If it gets stuck on these screens, the automated script never runs.
 
 **How to manually configure and resume:**
-1. Open the VM console: `virt-viewer -c qemu:///system cape-win`
-2. If Windows is asking for setup information (Network, Account, etc.), click through it to reach the Desktop.
-3. Open **Windows PowerShell** as **Administrator**.
+1. Open the VM console on your Ubuntu host: `virt-viewer -c qemu:///system cape-win`
+2. If Windows is asking for setup information, click Next/Skip until you reach the Desktop.
+3. Open **Windows PowerShell** as **Administrator** (Right-click -> Run as Administrator).
 4. Run this smart-command to automatically find and execute the automated setup script from the virtual CD-ROM (even if the drive letter isn't D:):
    ```powershell
    Set-ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
    ```
-   > **⚠️ Warning:** If you accidentally click inside the blue PowerShell window, Windows will enter "Select" mode and freeze the installation script! If it seems stuck on "Installing Python" for more than 1 minute, press `Esc` and `Enter` on your keyboard to unfreeze it.
+   > **⚠️ Warning (The QuickEdit Trap):** If you accidentally click inside the blue PowerShell window, Windows will enter "Select" mode and **freeze the installation script**! If it seems stuck on "Installing Python" for more than 1 minute, press `Esc` and `Enter` on your keyboard to unfreeze it.
 
 5. Wait for it to print `Guest configuration complete!`.
-6. On your Ubuntu host, run: `sudo ./install.sh --resume`
+6. Go back to your Ubuntu host and run: `sudo ./install.sh --resume`
+
+### Q: Why does the PowerShell script say "Access is denied" when setting the IP?
+You opened PowerShell as a standard user. You **must** right-click the PowerShell icon and select **Run as Administrator**. The script requires admin privileges to configure the firewall and network adapters.
+
+### Q: I wiped the VM using `virsh undefine`, and it deleted the 5GB ISO! Do I have to re-download it?
+No, the latest version of this installer automatically isolates the downloaded ISO into a protected folder (`/var/lib/cape-isos/`). Now, if you run `virsh undefine cape-win --remove-all-storage`, libvirt will only delete the virtual hard drive and **will not** touch the ISO.
+
+### Q: A malware analysis has been running for 5 minutes, is it stuck?
+No! CAPEv2 takes an average of 3 to 6 minutes to fully execute a malware payload in the sandbox, record all API calls, generate pcap files, extract payloads, and generate the final report. This is completely normal. 
 
 ---
 
