@@ -638,7 +638,7 @@ class Orchestrator:
         vm_list = self._cmd.run_capture(["virsh", "list", "--all"])
         if vm_name in vm_list:
             self._cmd.run(["virsh", "destroy", vm_name])
-            self._cmd.run(["virsh", "undefine", vm_name, "--remove-all-storage", "--nvram", "--snapshots-metadata"])
+            self._cmd.run(["virsh", "undefine", vm_name, "--nvram", "--snapshots-metadata"])
 
         # Remove disk files and staging files
         for fpath in [disk_path, unattend_iso, os.path.join(self._project_dir, "state", f"{vm_name}-unattend.iso")]:
@@ -2320,7 +2320,7 @@ WantedBy=multi-user.target
                         "Purging incomplete VM and disk to ensure a fresh, clean Windows installation..."
                     )
                     self._cmd.run(["virsh", "destroy", vm_name], quiet=True)
-                    self._cmd.run(["virsh", "undefine", vm_name, "--remove-all-storage", "--nvram", "--snapshots-metadata"], quiet=True)
+                    self._cmd.run(["virsh", "undefine", vm_name, "--nvram", "--snapshots-metadata"], quiet=True)
                     if disk_path and os.path.isfile(disk_path):
                         try:
                             os.remove(disk_path)
