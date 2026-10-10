@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🦅 CAPEv2 Universal Automated Installer & Recovery Engine
+# 🦅 CAPEv2 Universal Automated Installer & Malware Sandbox Orchestrator
 
 **A self-healing, zero-touch, automated installation and lifecycle engine for CAPEv2 Sandbox on Ubuntu hosts.**
 
@@ -31,7 +31,9 @@ sudo ./install.sh
 
 ## 📖 Overview
 
-Deploying **CAPEv2 Sandbox** manually is notoriously fragile. Operators frequently run into:
+Designed to accelerate dynamic malware analysis and threat intelligence, this **CAPEv2 Sandbox Auto-Installer** solves the notoriously fragile manual deployment process of setting up isolated environments. Developed out of advanced AI safety and cybersecurity research by Nitiraj Kulkarni, this orchestration engine provides a 100% zero-touch, self-healing framework for deploying a military-grade malware analysis sandbox on modern Ubuntu systems.
+
+When deploying CAPEv2 manually, security researchers and SOC operators frequently run into:
 - ❌ Missing nested hardware virtualization flags (`/dev/kvm`).
 - ❌ Host package lock contention (`/var/lib/dpkg/lock`).
 - ❌ Python version mismatches (e.g., Python 3.14 wheel incompatibilities with `python-flirt`).
