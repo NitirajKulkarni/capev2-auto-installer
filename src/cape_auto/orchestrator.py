@@ -1719,6 +1719,9 @@ drop = off
         self._cmd.run(["bash", "-c", "echo 'deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse' | tee /etc/apt/sources.list.d/mongodb-org-7.0.list"])
         self._cmd.run(["apt-get", "update", "-y"])
         
+        # Robustly fix any broken APT state (like orphaned dependencies from other tools)
+        self._cmd.run(["apt-get", "--fix-broken", "install", "-y"])
+        
         # Install mongodb-org
         install_res = self._cmd.run(["apt-get", "install", "-y", "mongodb-org"], timeout=300)
         
