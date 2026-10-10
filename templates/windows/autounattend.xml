@@ -124,7 +124,6 @@
         <HideOEMRegistrationScreens>true</HideOEMRegistrationScreens>
         <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
-        <HideLocalAccountScreen>true</HideLocalAccountScreen>
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
       <FirstLogonCommands>
