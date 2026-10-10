@@ -81,6 +81,14 @@ Write-Output "[*] Allowing Python through Windows Firewall..."
 netsh advfirewall firewall add rule name="CAPE-Agent-Python" dir=in action=allow program="C:\Program Files\Python310\python.exe" enable=yes | Out-Null
 netsh advfirewall firewall add rule name="CAPE-Agent-Port" dir=in action=allow protocol=TCP localport=8000 | Out-Null
 
+Write-Output "[*] Starting CAPEv2 Agent in the background..."
+$pythonPath = "C:\Program Files\Python310\pythonw.exe"
+if (Test-Path $pythonPath) {
+    Start-Process -FilePath $pythonPath -ArgumentList (Join-Path $startupDir "agent.pyw") -WindowStyle Hidden
+} else {
+    Write-Output "[-] WARNING: pythonw.exe not found! Agent will start on next reboot."
+}
+
 Write-Output "[+] Guest configuration complete! Real CAPE agent is installed."
 
 Stop-Transcript -ErrorAction SilentlyContinue
