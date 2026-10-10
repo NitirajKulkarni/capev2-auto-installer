@@ -1849,19 +1849,13 @@ WantedBy=multi-user.target
 
         for svc, unit_content in units.items():
             unit_file = f"/etc/systemd/system/{svc}.service"
-            exists = self._cmd.run(["systemctl", "cat", f"{svc}.service"])
-            if not exists.success:
-                try:
-                    with open(unit_file, "w", encoding="utf-8") as f:
-                        f.write(unit_content)
-                    self._state.register_resource("systemd_unit", svc, ResourceOwnership.CREATED_BY_INSTALLER)
-                    logger.info(f"Synthesized systemd unit: {svc}.service")
-                except Exception as e:
-                    logger.debug(f"Could not write {unit_file}: {e}")
-            else:
+            try:
+                with open(unit_file, "w", encoding="utf-8") as f:
+                    f.write(unit_content)
                 self._state.register_resource("systemd_unit", svc, ResourceOwnership.CREATED_BY_INSTALLER)
-                logger.info(f"Service {svc}: installed")
-
+                logger.info(f"Synthesized systemd unit: {svc}.service")
+            except Exception as e:
+                logger.debug(f"Could not write {unit_file}: {e}")
         self._cmd.run(["systemctl", "daemon-reload"])
 
     def _stage_network(self) -> None:
