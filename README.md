@@ -7,7 +7,6 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Ubuntu: 24.04 | 22.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2022.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests: 53 Passing](https://img.shields.io/badge/Tests-53%2F53%20Passing-brightgreen.svg)](tests/)
 [![Guest: Zero--Touch Unattended](https://img.shields.io/badge/Windows-Zero--Touch%20Unattended-0078D6?logo=windows&logoColor=white)](templates/windows/)
 
 **Author & Maintainer:** [**Nitiraj V. Kulkarni — AI Safety & Cybersecurity Researcher**](https://nitirajkulkarni.in/)  
@@ -143,9 +142,7 @@ The installer provisions a complete analysis virtual machine with **zero manual 
 | `sudo ./repair.sh` | **Self-Repair** | Automatically heals broken services, stale locks, and network interfaces. |
 | `sudo ./status.sh` | **Status** | Displays state of all 24 stages and active checkpoints. |
 | `sudo ./status.sh --drift` | **Drift Check** | Detects drift between configuration files and runtime system state. |
-| `sudo ./uninstall.sh` | **Safe Uninstall** | Removes only resources created by the installer; preserves user VMs. |
 | `sudo ./uninstall.sh --full-reset` | **Full Wipe** | Complete uninstall including virtual disks, networks, and databases. |
-| `sudo ./install.sh --self-test` | **Self-Test** | Validates internal command runner, state persistence, and secret filters. |
 
 ---
 
@@ -269,21 +266,7 @@ port = 8000
 
 ---
 
-## 🧪 Testing & Validation
 
-The framework includes **53 automated unit and integration tests** covering all subsystems:
-
-```bash
-# Run unit test suite:
-python3 -m unittest discover tests -v
-
-# Run internal framework self-test:
-python3 src/cape_auto/cli.py --self-test
-```
-
-All 53 test cases pass cleanly across Python 3.10, 3.11, 3.12, 3.13, and 3.14.
-
----
 
 ## 📁 Repository Structure
 
@@ -300,7 +283,6 @@ capev2-auto-installer/
 ├── docs/                       # 📚 Architecture, configuration & runbooks
 ├── src/cape_auto/              # 🐍 Core Python orchestration engine
 ├── templates/                  # 📄 Systemd, network, and unattended XML templates
-└── tests/                      # 🧪 53 Automated unit & integration tests
 ```
 
 ---
