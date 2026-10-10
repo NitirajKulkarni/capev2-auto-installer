@@ -1160,6 +1160,7 @@ class Orchestrator:
             "build-essential", "python3-dev", "python3-venv", "python3-pip",
             "libffi-dev", "libssl-dev", "libjpeg-dev", "zlib1g-dev",
             "tmux", "htop", "jq", "unzip", "net-tools", "genisoimage",
+            "pkg-config", "libvirt-dev",
         ]
 
         # Install in batches to handle individual failures
@@ -1823,7 +1824,7 @@ Type=simple
 User={cape_user}
 Group={cape_user}
 WorkingDirectory={cape_root}
-ExecStart={py_bin} {cape_root}/cuckoo.py -d -m 4
+ExecStart={py_bin} {cape_root}/utils/process.py -auto
 Restart=always
 RestartSec=10
 
