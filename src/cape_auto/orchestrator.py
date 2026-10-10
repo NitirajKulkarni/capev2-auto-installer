@@ -2344,7 +2344,8 @@ WantedBy=multi-user.target
             edition = "win10_eval"
 
         eval_info = WINDOWS_EVAL_CATALOG[edition]
-        default_iso_dir = "/var/lib/libvirt/images"
+        default_iso_dir = "/var/lib/cape-isos"
+        os.makedirs(default_iso_dir, exist_ok=True)
         default_iso_path = os.path.join(default_iso_dir, eval_info["default_filename"])
 
         if not iso_path or not os.path.isfile(iso_path):
