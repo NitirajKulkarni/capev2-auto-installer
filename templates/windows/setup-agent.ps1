@@ -56,46 +56,31 @@ powercfg -x -standby-timeout-ac 0
 powercfg -x -hibernate-timeout-ac 0
 powercfg -x -monitor-timeout-ac 0
 
-# 7. Configure and Start CAPE Agent Daemon on Port 8000
-$agentDir = "C:\cape-agent"
-New-Item -ItemType Directory -Path $agentDir -Force | Out-Null
-
-# Allow port 8000 binding for all users
-netsh http add urlacl url=http://+:8000/ user=Everyone | Out-Null
-netsh advfirewall firewall add rule name="CAPE-Agent" dir=in action=allow protocol=TCP localport=8000 | Out-Null
-
-$agentServiceScript = @'
-try {
-    $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add("http://+:8000/")
-    $listener.Start()
-    while ($listener.IsListening) {
-        $context = $listener.GetContext()
-        $req = $context.Request
-        $res = $context.Response
-        $res.StatusCode = 200
-        $res.ContentType = "application/json"
-        $res.Headers.Add("Server", "CAPE-Agent/2.0")
-        $body = '{"status": "complete", "version": "2.0", "platform": "windows", "agent": "cape-agent", "features": ["dump", "execute", "status"]}'
-        $buf = [System.Text.Encoding]::UTF8.GetBytes($body)
-        $res.ContentLength64 = $buf.Length
-        $res.OutputStream.Write($buf, 0, $buf.Length)
-        $res.OutputStream.Close()
-    }
-} catch {
-    Write-Error $_.Exception.Message
+# 7. Install Python and CAPE Agent from the Unattended ISO
+Write-Output "[*] Locating installation media..."
+$isoDrive = (Get-PSDrive -PSProvider FileSystem | Where-Object { Test-Path (Join-Path $_.Root "python-installer.exe") }).Root
+if (-not $isoDrive) {
+    Write-Output "[-] ERROR: Could not find python-installer.exe on any CD-ROM drive!"
+    exit 1
 }
-'@
-Set-Content -Path "$agentDir\agent-service.ps1" -Value $agentServiceScript -Force
 
-# Start agent daemon right now in background
-Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$agentDir\agent-service.ps1`"" -WindowStyle Hidden
+$pythonInstaller = Join-Path $isoDrive "python-installer.exe"
+$agentSource = Join-Path $isoDrive "agent.pyw"
 
-# Add to Startup folder so it persists across snapshot reboots
+Write-Output "[*] Installing Python 3.10 silently (this may take a minute)..."
+$proc = Start-Process -FilePath $pythonInstaller -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0" -Wait -PassThru
+if ($proc.ExitCode -ne 0) {
+    Write-Output "[-] WARNING: Python installation returned exit code $($proc.ExitCode)"
+}
+
+Write-Output "[*] Installing official CAPEv2 Agent to Startup folder..."
 $startupDir = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
-$startupBat = "$startupDir\start-cape-agent.bat"
-$batContent = "@echo off`r`nstart /min powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$agentDir\agent-service.ps1`"`r`n"
-Set-Content -Path $startupBat -Value $batContent -Force
+Copy-Item -Path $agentSource -Destination (Join-Path $startupDir "agent.pyw") -Force
 
-Write-Output "[+] Guest configuration complete. CAPE Agent listening on http://192.168.250.100:8000/."
+Write-Output "[*] Allowing Python through Windows Firewall..."
+netsh advfirewall firewall add rule name="CAPE-Agent-Python" dir=in action=allow program="C:\Program Files\Python310\python.exe" enable=yes | Out-Null
+netsh advfirewall firewall add rule name="CAPE-Agent-Port" dir=in action=allow protocol=TCP localport=8000 | Out-Null
+
+Write-Output "[+] Guest configuration complete! Real CAPE agent is installed."
+
 Stop-Transcript -ErrorAction SilentlyContinue

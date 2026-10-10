@@ -2135,6 +2135,18 @@ WantedBy=multi-user.target
 
         target_xml = os.path.join(staging_dir, "Autounattend.xml")
         target_ps1 = os.path.join(staging_dir, "setup-agent.ps1")
+        
+        # Download Python 3.10 and CAPE agent into the staging dir so they are baked into the ISO
+        python_installer = os.path.join(staging_dir, "python-installer.exe")
+        agent_py = os.path.join(staging_dir, "agent.pyw")
+        try:
+            logger.info("Downloading Python 3.10 for Windows VM...")
+            self._cmd.run_checked(["curl", "-sL", "https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe", "-o", python_installer])
+            
+            logger.info("Downloading official CAPEv2 agent.py for Windows VM...")
+            self._cmd.run_checked(["curl", "-sL", "https://raw.githubusercontent.com/kevoreilly/CAPEv2/master/agent/agent.py", "-o", agent_py])
+        except Exception as e:
+            logger.warning(f"Failed to download VM dependencies (Agent might not be setup): {e}")
 
         import shutil
         if os.path.isfile(template_xml):
