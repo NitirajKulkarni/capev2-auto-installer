@@ -1709,46 +1709,32 @@ drop = off
             )
             return
 
-        # Check if installed
-        installed = self._cmd.run(["which", "mongod"])
-        if installed.success:
-            # Just start it
+        # Install MongoDB robustly for modern Ubuntu (24.04 / 26.04)
+        logger.info("Installing MongoDB Community Edition...")
+        
+        # Add MongoDB GPG key and Repository
+        self._cmd.run(["apt-get", "update", "-y"])
+        self._cmd.run(["apt-get", "install", "-y", "gnupg", "curl"])
+        self._cmd.run(["bash", "-c", "curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --yes --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg"])
+        self._cmd.run(["bash", "-c", "echo 'deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse' | tee /etc/apt/sources.list.d/mongodb-org-7.0.list"])
+        self._cmd.run(["apt-get", "update", "-y"])
+        
+        # Install mongodb-org
+        install_res = self._cmd.run(["apt-get", "install", "-y", "mongodb-org"], timeout=300)
+        
+        if install_res.success:
             self._cmd.run(["systemctl", "enable", "mongod"])
             self._cmd.run(["systemctl", "start", "mongod"])
-            self._state.register_resource(
-                "database", "mongodb", ResourceOwnership.MODIFIED_BY_INSTALLER
-            )
-            return
-
-        # Check CPU for AVX (needed for MongoDB 5.0+)
-        cpuinfo = self._cmd.run_capture(["cat", "/proc/cpuinfo"])
-        has_avx = "avx" in cpuinfo.lower()
-
-        if not has_avx:
-            logger.warning("CPU does not support AVX - using MongoDB 4.4 or compatible version")
-
-        # Install MongoDB using upstream CAPE installer
-        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
-        installer = os.path.join(cape_root, "installer", "cape2.sh")
-
-        if os.path.isfile(installer):
-            logger.info("Installing MongoDB via CAPE installer...")
-            result = self._cmd.run(
-                ["bash", installer, "mongo"],
-                timeout=600,
-            )
-            if result.success:
-                self._state.register_resource(
-                    "database", "mongodb", ResourceOwnership.CREATED_BY_INSTALLER
-                )
-                return
-
-        # Fallback: direct installation
-        logger.info("Attempting direct MongoDB installation...")
-        self._cmd.run(
-            ["apt-get", "install", "-y", "mongodb"],
-            timeout=300,
-        )
+            self._state.register_resource("database", "mongodb", ResourceOwnership.CREATED_BY_INSTALLER)
+            
+            # Auto-enable MongoDB in reporting.conf
+            cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+            reporting_conf = os.path.join(cape_root, "custom", "conf", "reporting.conf")
+            os.makedirs(os.path.dirname(reporting_conf), exist_ok=True)
+            self._cmd.run(["bash", "-c", f"echo -e '[mongodb]\\nenabled = yes' > {reporting_conf}"])
+            self._cmd.run(["chown", "-R", "cape:cape", os.path.dirname(reporting_conf)])
+        else:
+            logger.error(f"Failed to install MongoDB: {install_res.stderr}")
 
     def _setup_postgresql(self) -> None:
         """Setup PostgreSQL."""
