@@ -102,8 +102,8 @@ The installer provisions the virtual machine and automated answer disc, after wh
  └──────────────────────┘      └────────────────────────┘      └──────────┬────────────┘
                                                                           │
  ┌──────────────────────┐      ┌────────────────────────┐                 ▼
- │ Clean Snapshot Saved │      │ Guest Agent Listening  │      ┌───────────────────────┐
- │ Name: cape-clean     │ ◄─── │ Port 8000 Verified     │ ◄─── │ Manual PS1 Execution  │
+ │ Clean Snapshot Saved │      │ Restart Guest VM       │      ┌───────────────────────┐
+ │ Name: cape-clean     │ ◄─── │ Port 8000 Handshake OK │ ◄─── │ Manual PS1 Execution  │
  │ Configured in kvm.conf│     │ Static: 192.168.250.100│      │ powershell -ep bypass │
  └──────────────────────┘      └────────────────────────┘      └───────────────────────┘
 ```
@@ -157,6 +157,19 @@ The guest deployment process is split into three clean phases:
    > [!WARNING]
    > Do **NOT** run `.\setup-agent.ps1` directly without bypassing execution policy! Windows will block it with:  
    > `File ... cannot be loaded because running scripts is disabled on this system (PSSecurityException: UnauthorizedAccess)`.
+
+4. **Restart the Windows VM (Mandatory to Trigger Detection & Snapshot):**  
+   Once the script finishes and outputs `[+] Guest configuration complete!`, restart the Windows VM:
+   ```powershell
+   Restart-Computer
+   ```
+   *(Or from your Ubuntu host terminal: `virsh reboot cape-win`)*.
+
+   > [!TIP]
+   > **Why restarting the VM makes the installer detect the agent:**
+   > - **Clean Network Binding:** Restarting cleanly applies the static IP (`192.168.250.100`), flushing any transient DHCP leases or half-open socket states.
+   > - **Automatic Startup Daemon:** The script registers `agent.pyw` into the Windows Startup folder (`%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup`). When Windows boots up and auto-logs into the `cape` user, it automatically launches the agent daemon in the background listening on port 8000.
+   > - **Instant Handshake:** Within ~10 to 15 seconds after rebooting, the Ubuntu orchestrator detects the `HTTP 200 OK` response on `http://192.168.250.100:8000/`, stops polling, and automatically captures the clean baseline snapshot (`cape-clean`)!
 
 #### What `setup-agent.ps1` Automates Inside the Guest:
 - 🌐 **Static Network Binding:** Configures static IP `192.168.250.100`, subnet mask `255.255.255.0`, gateway `192.168.250.1`, and DNS `1.1.1.1`.
@@ -304,15 +317,29 @@ Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSD
 
 ---
 
-### Q5: The Ubuntu installer is waiting at "Awaiting guest agent on 192.168.250.100:8000...". Is it stuck?
-**Explanation:** No! The host installer has completed all Ubuntu setup tasks and is actively polling the Windows guest VM on `http://192.168.250.100:8000/`. It will wait patiently until you execute `setup-agent.ps1` inside the guest.  
+### Q5: The script finished in Windows, but Ubuntu still waits at "Awaiting guest agent on 192.168.250.100:8000...". What should I do?
+**Fix: Simply restart the Windows VM!**  
+In the Windows guest PowerShell, run:
+```powershell
+Restart-Computer
+```
+Or from your Ubuntu host terminal:
+```bash
+virsh reboot cape-win
+```
+
+**Why restarting makes it detect immediately:**
+1. **Flushes Network Stack:** On Windows, assigning the static IP `192.168.250.100` during an active session can leave adapter routes unrefreshed on the host bridge. A reboot cleanly binds the static IP and routing table with `virbr-cape`.
+2. **Auto-starts Agent Daemon:** `setup-agent.ps1` places `agent.pyw` into the Windows Startup folder (`%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup`). When the VM reboots and autologon logs into user `cape`, Windows automatically launches the agent daemon in the user session.
+3. **Instant Snapshot Trigger:** As soon as Windows boots back up (~10–15 seconds), the Ubuntu orchestrator receives `HTTP/1.0 200 OK`, immediately captures the `cape-clean` baseline snapshot, and launches the CAPEv2 systemd microservices!
+
 **How to verify from the Ubuntu host:**
-In a separate terminal on your Ubuntu host, run:
+In a separate terminal on your Ubuntu host, test connectivity:
 ```bash
 curl -I http://192.168.250.100:8000/
 ```
 - If it returns `HTTP/1.0 200 OK`, the agent is alive and the installer will immediately detect it and capture the snapshot.
-- If it returns `Connection refused` or times out, the setup script inside Windows has not finished or needs to be executed.
+- If it returns `Connection refused` or times out, restarting the VM via `virsh reboot cape-win` will launch the agent on boot.
 
 ---
 
