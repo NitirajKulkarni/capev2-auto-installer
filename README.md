@@ -90,9 +90,9 @@ sudo ./install.sh --resume
 
 ---
 
-## 🪟 Windows Guest Provisioning & Manual Agent Setup
+## 🪟 Windows Guest Provisioning & Mandatory Manual Agent Setup
 
-The installer provisions the virtual machine and automated answer disc, after which you execute the guest configuration script manually:
+The installer provisions the virtual machine and automated answer disc, after which you execute the guest configuration script manually inside the Windows VM.
 
 ```
  ┌──────────────────────┐      ┌────────────────────────┐      ┌───────────────────────┐
@@ -108,35 +108,74 @@ The installer provisions the virtual machine and automated answer disc, after wh
  └──────────────────────┘      └────────────────────────┘      └───────────────────────┘
 ```
 
-1. **Automatic Download**: Streams genuine Microsoft Windows Enterprise Evaluation ISOs with chunked resume support and live MB/s progress.
-2. **OEMDRV Answer Disc**: Automatically generates `cape-unattend.iso` containing `Autounattend.xml` and `setup-agent.ps1` attached as a secondary optical drive (drive `E:` or `D:`).
-3. **Hardware Bypass for Win11**: Injects WinPE bypasses for TPM 2.0, Secure Boot, RAM, and CPU checks.
-4. **Out-of-the-Box Driver Compatibility**: Provisions virtual disks over native SATA AHCI and network over Intel `e1000e`, eliminating third-party VirtIO driver dependencies during Windows setup.
-5. **Mandatory Manual Agent Setup (`setup-agent.ps1`)**:
-   > [!IMPORTANT]
-   > **The guest agent setup does NOT run automatically.** Windows execution policies and UAC prevent automated background execution of first-logon PowerShell scripts.  
-   > Once Windows finishes installation and lands on the Desktop, you **must run `setup-agent.ps1` manually in Administrator PowerShell**.
+---
 
-   **Step-by-step guest setup:**
-   1. Inside the Windows guest VM, open **Windows PowerShell** as **Administrator** (Right-click &rarr; *Run as Administrator*).
-   2. Navigate to the mounted virtual CD-ROM drive (usually `E:` or `D:`) and execute with `-ExecutionPolicy Bypass`:
-      ```powershell
-      E:
-      powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
-      ```
-      *Or run this universal 1-liner that auto-detects the drive regardless of drive letter:*
-      ```powershell
-      Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
-      ```
+### 📋 Sequential Deployment Flow
+
+The guest deployment process is split into three clean phases:
+
+#### Phase 1: Automated Base OS Setup (Host Orchestrated)
+1. **Evaluation ISO Streaming**: Automatically downloads genuine Microsoft Windows Enterprise Evaluation ISOs with live MB/s progress and chunked resume support.
+2. **Dynamic Answer Disc (OEMDRV)**: Generates `cape-unattend.iso` containing `Autounattend.xml` and `setup-agent.ps1`, attached as a secondary optical drive (drive `E:` or `D:`).
+3. **Hardware & OOBE Bypasses**: Injects WinPE bypasses for Windows 11 TPM 2.0, Secure Boot, RAM, CPU checks, and OOBE network requirement (`BypassNRO`).
+4. **Hardware Stability**: Configures virtual disks over native SATA AHCI and networking over Intel `e1000e`, eliminating third-party VirtIO driver dependencies during setup.
+5. **Base Installation**: Windows automatically partitions the disk, installs the OS, and boots to the desktop with autologon user `cape` (Password: `cape`).
+
+---
+
+#### Phase 2: Mandatory Manual Guest Configuration (`setup-agent.ps1`)
+
+> [!IMPORTANT]
+> **The guest agent setup script does NOT run automatically.**  
+> Windows default security policies, User Account Control (UAC), and PowerShell execution restrictions (`Restricted`) prevent automatic first-logon background script runs.  
+> Once Windows finishes setup and displays the Desktop, you **must run `setup-agent.ps1` manually in Administrator PowerShell**.
+
+#### Step-by-Step Guest Execution Guide:
+
+1. **Access the Windows Console:**  
+   Open the VM display on your Ubuntu host:
+   ```bash
+   virt-viewer -c qemu:///system cape-win
+   ```
+   *(Or connect via any VNC client to the host's VNC port).*
+
+2. **Open PowerShell as Administrator:**  
+   Click the Windows Start menu &rarr; Type `powershell` &rarr; Right-click **Windows PowerShell** &rarr; Select **Run as Administrator**.
+
+3. **Execute the Setup Script with Execution Policy Bypass:**  
+   Navigate to the mounted virtual CD-ROM drive (usually `E:` or `D:`) and run:
+   ```powershell
+   # If your answer disc is on drive E:
+   E:
+   powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
+   ```
+   *Alternatively, run this universal 1-liner that auto-detects the drive regardless of drive letter:*
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
+   ```
+
    > [!WARNING]
    > Do **NOT** run `.\setup-agent.ps1` directly without bypassing execution policy! Windows will block it with:  
    > `File ... cannot be loaded because running scripts is disabled on this system (PSSecurityException: UnauthorizedAccess)`.
 
-6. **Automatic Verification & Snapshot**: 
-   - `setup-agent.ps1` assigns static IP `192.168.250.100/24` on gateway `192.168.250.1`.
-   - Hardens the guest baseline: disables Windows Defender real-time monitoring, UAC, Windows Update, Firewall, and sleep timeouts.
-   - Launches the HTTP agent daemon on `http://192.168.250.100:8000/`.
-   - As soon as the agent responds, the host installer detects `HTTP 200 OK`, captures the clean snapshot `cape-clean`, and completes setup!
+#### What `setup-agent.ps1` Automates Inside the Guest:
+- 🌐 **Static Network Binding:** Configures static IP `192.168.250.100`, subnet mask `255.255.255.0`, gateway `192.168.250.1`, and DNS `1.1.1.1`.
+- 🛡️ **Forensic Hardening:** Disables Windows Defender (real-time monitoring, cloud protection, automatic sample submission), UAC, Windows Firewall across all profiles, and sleep/display timers.
+- 🐍 **Agent Deployment:** Deploys an isolated Python runtime and launches the official CAPEv2 HTTP Agent daemon on `http://192.168.250.100:8000/` registered in Windows Startup.
+- ✅ **Confirmation:** Prints `[+] Guest configuration complete! CAPE Agent is active on port 8000.`
+
+---
+
+#### Phase 3: Automated Snapshot & Deployment Finalization (Host Orchestrated)
+1. **Agent Handshake**: The Ubuntu orchestrator continuously polls `http://192.168.250.100:8000/` until it receives `HTTP 200 OK`.
+2. **Clean Snapshot Capture**: As soon as the agent responds, the orchestrator pauses the VM and captures the clean baseline snapshot:
+   ```bash
+   virsh snapshot-create-as cape-win cape-clean --disk-only --atomic
+   ```
+3. **Machinery Binding**: Automatically registers snapshot metadata into `/opt/CAPEv2/conf/kvm.conf`.
+4. **Stack Launch**: Starts all CAPEv2 systemd microservices (`cape.service`, `cape-web.service`, `cape-processor.service`, `rooter.service`) in proper dependency order.
+
+---
 
 > [!CAUTION]
 > **Strict Policy: Strictly NO Tiny11 or Stripped Custom OS Images**  
@@ -219,32 +258,106 @@ Running your Ubuntu CAPEv2 host inside VirtualBox, VMware, Hyper-V, or Proxmox? 
 
 ---
 
-## ❓ FAQ & Troubleshooting
+## ❓ Detailed FAQ & Troubleshooting Guide
 
-### Q: The installer timed out at "Awaiting guest agent...". What happened?
-The script is designed to be 100% zero-touch via `autounattend.xml`, but sometimes Windows 10/11 aggressive network checks ("Let's connect you to a network") ignore the OOBE skip commands. If it gets stuck on these screens, the automated script never runs.
+### Q1: Why does running `.\setup-agent.ps1` fail with `PSSecurityException: UnauthorizedAccess`?
+**Cause:** Windows PowerShell defaults to `Restricted` execution policy, which blocks running any external scripts (`.ps1`).  
+**Fix:** You must execute the script with `-ExecutionPolicy Bypass`. In PowerShell (Admin):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
+```
+*Or set the execution policy for your current PowerShell session first:*
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+.\setup-agent.ps1
+```
 
-**How to manually configure and resume:**
-1. Open the VM console on your Ubuntu host: `virt-viewer -c qemu:///system cape-win`
-2. If Windows is asking for setup information, click Next/Skip until you reach the Desktop.
-3. Open **Windows PowerShell** as **Administrator** (Right-click -> Run as Administrator).
-4. Run this smart-command to automatically find and execute the automated setup script from the virtual CD-ROM (even if the drive letter isn't D:):
-   ```powershell
-   Set-ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
-   ```
-   > **⚠️ Warning (The QuickEdit Trap):** If you accidentally click inside the blue PowerShell window, Windows will enter "Select" mode and **freeze the installation script**! If it seems stuck on "Installing Python" for more than 1 minute, press `Esc` and `Enter` on your keyboard to unfreeze it.
+---
 
-5. Wait for it to print `Guest configuration complete!`.
-6. Go back to your Ubuntu host and run: `sudo ./install.sh --resume`
+### Q2: Which drive letter is the setup script on? (`D:`, `E:`, or `F:`)?
+**Explanation:** Windows assigns drive letters to CD-ROM drives dynamically depending on partitions.  
+- If Windows only has a `C:` drive, the answer disc is usually `D:`.
+- If Windows has a recovery partition or second disk, the answer disc is often `E:`.  
+**How to check:** In PowerShell, run:
+```powershell
+Get-PSDrive -PSProvider FileSystem
+```
+Look for the drive labeled `OEMDRV` or `cuckoo`. You can switch to that drive (e.g. `E:`) and run `dir` to see `setup-agent.ps1`.  
+**Universal 1-Liner:** If you don't want to check drive letters, use this command—it scans all drives automatically:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
+```
 
-### Q: Why does the PowerShell script say "Access is denied" when setting the IP?
-You opened PowerShell as a standard user. You **must** right-click the PowerShell icon and select **Run as Administrator**. The script requires admin privileges to configure the firewall and network adapters.
+---
 
-### Q: I wiped the VM using `virsh undefine`, and it deleted the 5GB ISO! Do I have to re-download it?
-No, the latest version of this installer automatically isolates the downloaded ISO into a protected folder (`/var/lib/cape-isos/`). Now, if you run `virsh undefine cape-win --remove-all-storage`, libvirt will only delete the virtual hard drive and **will not** touch the ISO.
+### Q3: Why does PowerShell freeze or stop progressing during script execution? (The QuickEdit Trap)
+**Cause:** The Windows console has **QuickEdit Mode** enabled by default. If you click anywhere inside the blue PowerShell console window, Windows enters text-selection mode and **pauses the entire execution thread**!  
+**Fix:**
+1. If the script appears stuck (e.g., waiting on "Installing Python..." for over 2 minutes), click the window and press **`Esc`** followed by **`Enter`**. Output will immediately resume scrolling.
+2. To permanently disable QuickEdit: Right-click the PowerShell title bar &rarr; *Properties* &rarr; *Options* tab &rarr; Uncheck **QuickEdit Mode** &rarr; Click *OK*.
 
-### Q: A malware analysis has been running for 5 minutes, is it stuck?
-No! CAPEv2 takes an average of 3 to 6 minutes to fully execute a malware payload in the sandbox, record all API calls, generate pcap files, extract payloads, and generate the final report. This is completely normal. 
+---
+
+### Q4: Why does the PowerShell script say "Access is denied" when setting the IP address?
+**Cause:** You launched PowerShell as a standard user instead of Administrator. Network configuration and Defender remediation require administrative privileges.  
+**Fix:** Close the window, open the Start menu, type `powershell`, right-click **Windows PowerShell**, and click **Run as Administrator**.
+
+---
+
+### Q5: The Ubuntu installer is waiting at "Awaiting guest agent on 192.168.250.100:8000...". Is it stuck?
+**Explanation:** No! The host installer has completed all Ubuntu setup tasks and is actively polling the Windows guest VM on `http://192.168.250.100:8000/`. It will wait patiently until you execute `setup-agent.ps1` inside the guest.  
+**How to verify from the Ubuntu host:**
+In a separate terminal on your Ubuntu host, run:
+```bash
+curl -I http://192.168.250.100:8000/
+```
+- If it returns `HTTP/1.0 200 OK`, the agent is alive and the installer will immediately detect it and capture the snapshot.
+- If it returns `Connection refused` or times out, the setup script inside Windows has not finished or needs to be executed.
+
+---
+
+### Q6: How do I open the Windows guest graphical desktop from Ubuntu?
+If you are running on a local desktop or via SSH with X11 forwarding:
+```bash
+virt-viewer -c qemu:///system cape-win
+```
+If you are on a headless server without GUI, use VNC:
+```bash
+virsh vncdisplay cape-win
+```
+*(e.g., `:0` corresponds to port `5900`, `:1` to `5901`). Connect using any VNC viewer (Remmina, TigerVNC, RealVNC).*
+
+---
+
+### Q7: Can I re-run `setup-agent.ps1` if something went wrong or the VM rebooted?
+**Yes.** `setup-agent.ps1` is completely idempotent. You can re-run it multiple times without issues. It will verify the static IP, re-check Defender disablement, and restart the agent on port 8000.
+
+---
+
+### Q8: How to verify that the CAPE agent is listening inside Windows?
+Inside the Windows guest PowerShell:
+```powershell
+netstat -ano | findstr 8000
+```
+Or test via PowerShell:
+```powershell
+Test-NetConnection -Port 8000 -ComputerName 127.0.0.1
+```
+If `TcpTestSucceeded : True`, the CAPE agent HTTP server is active and listening.
+
+---
+
+### Q9: What if Windows setup prompts for a Microsoft Account or internet during installation?
+If Windows setup pauses at "Let's connect you to a network":
+1. Press `Shift + F10` to open a command prompt.
+2. Type `OOBE\BYPASSNRO` and press Enter. The VM will reboot.
+3. Upon reboot, click **"I don't have internet"**, then select **"Continue with limited setup"**.
+4. Set the username to `cape` and password to `cape`.
+
+---
+
+### Q10: A malware analysis task has been running for 5 minutes, is it stuck?
+No! CAPEv2 takes an average of 3 to 6 minutes to fully execute a malware payload in the sandbox, record all API calls, generate PCAP files, extract payloads, and generate the final report. This is completely normal operational behavior.
 
 ---
 
