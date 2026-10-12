@@ -7,7 +7,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Ubuntu: 24.04 | 22.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2022.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Guest: Zero--Touch Unattended](https://img.shields.io/badge/Windows-Zero--Touch%20Unattended-0078D6?logo=windows&logoColor=white)](templates/windows/)
+[![Guest: Answer Disc Provisioning](https://img.shields.io/badge/Windows-Answer%20Disc%20Provisioning-0078D6?logo=windows&logoColor=white)](templates/windows/)
 
 **Author & Maintainer:** [**Nitiraj V. Kulkarni — AI Safety & Cybersecurity Researcher**](https://nitirajkulkarni.in/)  
 [![Website](https://img.shields.io/badge/Website-nitirajkulkarni.in-0078D6?style=flat&logo=googlechrome&logoColor=white)](https://nitirajkulkarni.in/)
@@ -90,33 +90,53 @@ sudo ./install.sh --resume
 
 ---
 
-## 🪟 100% Unattended Windows Guest Automation
+## 🪟 Windows Guest Provisioning & Manual Agent Setup
 
-The installer provisions a complete analysis virtual machine with **zero manual clicks**:
+The installer provisions the virtual machine and automated answer disc, after which you execute the guest configuration script manually:
 
 ```
  ┌──────────────────────┐      ┌────────────────────────┐      ┌───────────────────────┐
  │ Official Microsoft   │      │ Dynamic Answer Disc    │      │ KVM / QEMU Virtual    │
- │ Enterprise Eval ISO  │ ───► │ Volume: OEMDRV         │ ───► │ Machine Auto-Boot     │
+ │ Enterprise Eval ISO  │ ───► │ Volume: OEMDRV         │ ───► │ Machine Boot          │
  │ (Win10 or Win11)     │      │ Autounattend.xml + PS1 │      │ (SATA Disk + e1000e)  │
  └──────────────────────┘      └────────────────────────┘      └──────────┬────────────┘
                                                                           │
  ┌──────────────────────┐      ┌────────────────────────┐                 ▼
  │ Clean Snapshot Saved │      │ Guest Agent Listening  │      ┌───────────────────────┐
- │ Name: cape-clean     │ ◄─── │ Port 8000 Verified     │ ◄─── │ FirstLogon Script     │
- │ Configured in kvm.conf│     │ Static: 192.168.250.100│      │ Hardens Sandbox & IP  │
+ │ Name: cape-clean     │ ◄─── │ Port 8000 Verified     │ ◄─── │ Manual PS1 Execution  │
+ │ Configured in kvm.conf│     │ Static: 192.168.250.100│      │ powershell -ep bypass │
  └──────────────────────┘      └────────────────────────┘      └───────────────────────┘
 ```
 
-1. **Automatic Download**: Downloads genuine Microsoft Windows Enterprise Evaluation ISOs with chunked resume support and live MB/s progress.
-2. **OEMDRV Answer Disc**: Automatically generates `cape-unattend.iso` containing `Autounattend.xml` and attaches it as a secondary optical drive.
+1. **Automatic Download**: Streams genuine Microsoft Windows Enterprise Evaluation ISOs with chunked resume support and live MB/s progress.
+2. **OEMDRV Answer Disc**: Automatically generates `cape-unattend.iso` containing `Autounattend.xml` and `setup-agent.ps1` attached as a secondary optical drive (drive `E:` or `D:`).
 3. **Hardware Bypass for Win11**: Injects WinPE bypasses for TPM 2.0, Secure Boot, RAM, and CPU checks.
 4. **Out-of-the-Box Driver Compatibility**: Provisions virtual disks over native SATA AHCI and network over Intel `e1000e`, eliminating third-party VirtIO driver dependencies during Windows setup.
-5. **FirstLogon Automation (`setup-agent.ps1`)**:
-   - Assigns static IP `192.168.250.100/24` on gateway `192.168.250.1`.
+5. **Mandatory Manual Agent Setup (`setup-agent.ps1`)**:
+   > [!IMPORTANT]
+   > **The guest agent setup does NOT run automatically.** Windows execution policies and UAC prevent automated background execution of first-logon PowerShell scripts.  
+   > Once Windows finishes installation and lands on the Desktop, you **must run `setup-agent.ps1` manually in Administrator PowerShell**.
+
+   **Step-by-step guest setup:**
+   1. Inside the Windows guest VM, open **Windows PowerShell** as **Administrator** (Right-click &rarr; *Run as Administrator*).
+   2. Navigate to the mounted virtual CD-ROM drive (usually `E:` or `D:`) and execute with `-ExecutionPolicy Bypass`:
+      ```powershell
+      E:
+      powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
+      ```
+      *Or run this universal 1-liner that auto-detects the drive regardless of drive letter:*
+      ```powershell
+      Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
+      ```
+   > [!WARNING]
+   > Do **NOT** run `.\setup-agent.ps1` directly without bypassing execution policy! Windows will block it with:  
+   > `File ... cannot be loaded because running scripts is disabled on this system (PSSecurityException: UnauthorizedAccess)`.
+
+6. **Automatic Verification & Snapshot**: 
+   - `setup-agent.ps1` assigns static IP `192.168.250.100/24` on gateway `192.168.250.1`.
    - Hardens the guest baseline: disables Windows Defender real-time monitoring, UAC, Windows Update, Firewall, and sleep timeouts.
-   - Deploys an HTTP agent daemon on `http://192.168.250.100:8000/` registered in Windows Startup.
-6. **Automatic Verification & Snapshot**: Orchestrator confirms `HTTP 200 OK` from the guest agent, captures snapshot `cape-clean`, and configures CAPE `kvm.conf`.
+   - Launches the HTTP agent daemon on `http://192.168.250.100:8000/`.
+   - As soon as the agent responds, the host installer detects `HTTP 200 OK`, captures the clean snapshot `cape-clean`, and completes setup!
 
 > [!CAUTION]
 > **Strict Policy: Strictly NO Tiny11 or Stripped Custom OS Images**  
