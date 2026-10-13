@@ -416,9 +416,12 @@ class DiagnosticsEngine:
             result.status = HealthStatus.FAIL.value
             result.severity = "high"
             result.symptoms.append("No CAPE services are running")
+            result.recommended_repairs.append("Start CAPE services: sudo systemctl restart cape-rooter cape cape-processor cape-web")
         elif active_count < len(services):
-            result.status = HealthStatus.WARN.value
-            result.severity = "medium"
+            result.status = HealthStatus.FAIL.value
+            result.severity = "high"
+            result.symptoms.append(f"Only {active_count}/{len(services)} CAPE services are active (core daemon 'cape' must be active to schedule VM tasks)")
+            result.recommended_repairs.append("Start inactive CAPE services: sudo systemctl restart cape-rooter cape cape-processor cape-web")
 
         return result
 

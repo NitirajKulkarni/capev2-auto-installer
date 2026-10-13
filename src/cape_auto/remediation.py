@@ -127,6 +127,24 @@ class RemediationEngine:
         logger.warning(f"Could not automatically repair {service_name}")
         return False
 
+    def repair_cape_services(self) -> bool:
+        """Repair and ensure all CAPEv2 systemd services are active."""
+        logger.info("Ensuring all CAPEv2 systemd services are running...")
+        services = ["cape-rooter", "cape", "cape-processor", "cape-web"]
+        all_ok = True
+        for svc in services:
+            svc_name = f"{svc}.service"
+            exists = self._cmd.run(["systemctl", "cat", svc_name])
+            if not exists.success:
+                continue
+            active = self._cmd.run(["systemctl", "is-active", svc_name])
+            if active.stdout.strip() != "active":
+                logger.info(f"Service {svc} is not active ({active.stdout.strip()}). Enabling and starting...")
+                self._cmd.run(["systemctl", "enable", svc_name])
+                if not self.repair_service(svc):
+                    all_ok = False
+        return all_ok
+
     def repair_libvirt(self) -> bool:
         """Repair libvirt connectivity."""
         logger.info("Attempting libvirt repair")

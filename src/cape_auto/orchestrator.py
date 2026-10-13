@@ -2955,7 +2955,11 @@ StartupNotify=true
             ),
             "KVM_ERROR": self._remediation.repair_kvm_modules,
             "DATABASE_ERROR": self._remediation.repair_database,
-            "SERVICE_ERROR": lambda: self._remediation.repair_service(stage_name.lower()),
+            "SERVICE_ERROR": (
+                self._remediation.repair_cape_services
+                if stage_name in ("cape_services", "SYSTEMD", "CAPE_START")
+                else lambda: self._remediation.repair_service(stage_name.lower())
+            ),
         }
 
         repair_fn = repair_map.get(error_category)
