@@ -274,19 +274,40 @@ WantedBy=multi-user.target
             self._cmd.run(["systemctl", "enable", svc_name])
             logger.info(f"Starting {svc_name}...")
             self._cmd.run(["systemctl", "start", svc_name], timeout=30)
-            time.sleep(2)
-            check = self._cmd.run(["systemctl", "is-active", svc_name])
-            if check.stdout.strip() == "active":
+
+            # Poll up to 15 seconds for service to reach 'active' (Python daemons take a few seconds to initialize)
+            is_up = False
+            state = "unknown"
+            for _ in range(15):
+                check = self._cmd.run(["systemctl", "is-active", svc_name])
+                state = check.stdout.strip()
+                if state == "active":
+                    is_up = True
+                    break
+                elif state == "failed":
+                    break
+                time.sleep(1)
+
+            if is_up:
                 logger.info(f"[+] Service {svc} is ACTIVE")
             else:
-                logger.warning(f"[-] Service {svc} is {check.stdout.strip()}. Restarting once...")
+                j_out = self._cmd.run(["journalctl", "-u", svc_name, "-n", "10", "--no-pager"])
+                logger.warning(f"[-] Service {svc} is '{state}', journal:\n{j_out.stdout}")
                 self._cmd.run(["systemctl", "restart", svc_name], timeout=30)
-                time.sleep(2)
-                check2 = self._cmd.run(["systemctl", "is-active", svc_name])
-                if check2.stdout.strip() == "active":
-                    logger.info(f"[+] Service {svc} is ACTIVE on restart")
+                for _ in range(15):
+                    check = self._cmd.run(["systemctl", "is-active", svc_name])
+                    state = check.stdout.strip()
+                    if state == "active":
+                        is_up = True
+                        break
+                    elif state == "failed":
+                        break
+                    time.sleep(1)
+
+                if is_up:
+                    logger.info(f"[+] Service {svc} is ACTIVE on retry")
                 else:
-                    logger.error(f"[!] Service {svc} failed to remain active: {check2.stdout.strip()}")
+                    logger.error(f"[!] Service {svc} failed to reach active state: {state}")
                     all_ok = False
         return all_ok
 
