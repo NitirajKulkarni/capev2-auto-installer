@@ -330,6 +330,13 @@ class Orchestrator:
         """Repair mode - diagnose and fix issues."""
         logger.info("Running repair mode...")
 
+        # Step 1: Ensure background daemons are stopped before running diagnostics and repairs
+        for svc in ["cape", "cape-processor"]:
+            self._cmd.run(["systemctl", "stop", f"{svc}.service"])
+        self._cmd.run("pkill -9 -f 'cuckoo.py' || true", shell=True)
+        self._cmd.run("pkill -9 -f 'process.py' || true", shell=True)
+        self._cmd.run("rm -f /opt/CAPEv2/cuckoo.pid /opt/CAPEv2/storage/cuckoo.pid /tmp/cuckoo-rooter*", shell=True)
+
         results = self._diag.diagnose_all()
         report = self._diag.generate_report(results)
         print(report)
@@ -344,13 +351,21 @@ class Orchestrator:
                     if self._attempt_repair(error_cat, r.component):
                         repaired += 1
 
-        if repaired > 0:
-            logger.info(f"Repaired {repaired} component(s). Re-running diagnostics...")
-            results = self._diag.diagnose_all()
-            report = self._diag.generate_report(results)
-            print(report)
+        # Always start and verify all CAPEv2 microservices in verified order after repairs
+        logger.info("Starting and verifying all CAPEv2 microservices in verified order...")
+        self._remediation.repair_cape_services()
 
-        return 0
+        # Re-run diagnostics to verify system health
+        logger.info("Re-running diagnostics to verify system health...")
+        results = self._diag.diagnose_all()
+        report = self._diag.generate_report(results)
+        print(report)
+
+        has_critical_failure = any(
+            r.status == HealthStatus.FAIL.value for r in results
+            if r.component in ("cape_services", "vm", "database")
+        )
+        return 1 if has_critical_failure else 0
 
     def diagnose(self, watch: bool = False) -> int:
         """Run diagnostic checks."""

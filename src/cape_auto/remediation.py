@@ -618,7 +618,15 @@ WantedBy=multi-user.target
             "(CAPEv2 requires live 'running' state with RAM). Automatically converting to running snapshot..."
         )
 
-        # Step 3: Ensure VM is started and running
+        # Step 3: Crucial - STOP CAPEv2 background services so cuckoo.py does NOT destroy cape-win during snapshot!
+        logger.info("Stopping CAPEv2 background daemons to prevent VM interference during snapshot creation...")
+        for svc in ["cape", "cape-processor"]:
+            self._cmd.run(["systemctl", "stop", f"{svc}.service"])
+        self._cmd.run("pkill -9 -f 'cuckoo.py' || true", shell=True)
+        self._cmd.run("pkill -9 -f 'process.py' || true", shell=True)
+        self._cmd.run("rm -f /opt/CAPEv2/cuckoo.pid /opt/CAPEv2/storage/cuckoo.pid /tmp/cuckoo-rooter*", shell=True)
+
+        # Step 4: Ensure VM is started and running
         dom_state = self._cmd.run(["virsh", "domstate", vm_name]).stdout.strip().lower()
         if "running" not in dom_state:
             logger.info(f"Starting VM '{vm_name}' (current domain state: {dom_state})...")
@@ -627,7 +635,7 @@ WantedBy=multi-user.target
                 logger.error(f"Failed to start VM '{vm_name}': {start_res.stderr}")
                 return False
 
-        # Step 4: Wait for guest agent to become responsive
+        # Step 5: Wait for guest agent to become responsive
         logger.info("Waiting for guest agent at http://192.168.250.100:8000/ to become responsive...")
         agent_url = "http://192.168.250.100:8000/"
         agent_ready = False
@@ -650,10 +658,13 @@ WantedBy=multi-user.target
             if "running" not in st:
                 logger.error(f"VM '{vm_name}' is not in running state: {st}")
                 return False
-            # Allow a short stabilization pause if VM domain is running
+            time.sleep(5)
+        else:
+            # Let guest desktop settle for 5 seconds after agent handshake
+            logger.info("Allowing guest system to settle before capturing baseline memory snapshot...")
             time.sleep(5)
 
-        # Step 5: Delete previous invalid snapshot if exists
+        # Step 6: Delete previous invalid snapshot if exists
         if snap_info.success:
             logger.info(f"Deleting outdated snapshot '{snap_name}' (state: {current_state})...")
             del_res = self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name])
@@ -661,18 +672,46 @@ WantedBy=multi-user.target
                 logger.debug(f"Direct delete failed; attempting with --metadata: {del_res.stderr}")
                 self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name, "--metadata"])
 
-        # Step 6: Create clean live snapshot with memory
+        # Check domain state right before taking snapshot
+        cur_domstate = self._cmd.run(["virsh", "domstate", vm_name]).stdout.strip().lower()
+        if "running" not in cur_domstate:
+            logger.info(f"VM '{vm_name}' is '{cur_domstate}'. Restarting VM to take live snapshot...")
+            self._cmd.run(["virsh", "start", vm_name])
+            for _ in range(20):
+                chk = self._cmd.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "2", agent_url], timeout=5)
+                if chk.stdout.strip() in ("200", "404", "403"):
+                    time.sleep(3)
+                    break
+                time.sleep(3)
+
+        # Step 7: Create clean live snapshot with memory
         # IMPORTANT: Do NOT use --disk-only. We need full memory state so snapshot state is 'running'.
         logger.info(f"Creating live memory snapshot '{snap_name}' for '{vm_name}'...")
         create_res = self._cmd.run([
             "virsh", "snapshot-create-as", vm_name, snap_name,
             "--description", "Clean Running Baseline with Memory for CAPEv2",
-        ])
+        ], timeout=180)
+
+        # If it failed because domain was not running, retry once after reviving domain
+        if not create_res.success and "domain is not running" in (create_res.stderr or "").lower():
+            logger.warning("Domain stopped during snapshot creation. Starting VM and retrying snapshot once...")
+            self._cmd.run(["virsh", "start", vm_name])
+            for _ in range(25):
+                chk = self._cmd.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "2", agent_url], timeout=5)
+                if chk.stdout.strip() in ("200", "404", "403"):
+                    time.sleep(5)
+                    break
+                time.sleep(3)
+            create_res = self._cmd.run([
+                "virsh", "snapshot-create-as", vm_name, snap_name,
+                "--description", "Clean Running Baseline with Memory for CAPEv2",
+            ], timeout=180)
+
         if not create_res.success:
             logger.error(f"Snapshot creation failed: {create_res.stderr or create_res.stdout}")
             return False
 
-        # Step 7: Verify snapshot state
+        # Step 8: Verify snapshot state
         verify_info = self._cmd.run(["virsh", "snapshot-info", vm_name, snap_name])
         new_state = ""
         if verify_info.success:
