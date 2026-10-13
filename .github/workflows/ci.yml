@@ -29,6 +29,10 @@ jobs:
         run: |
           python3 src/cape_auto/cli.py --self-test
 
+      - name: Run Unit Tests
+        run: |
+          python3 -m unittest discover tests
+
       - name: Run Dry-Run Validation
         run: |
           python3 src/cape_auto/cli.py --dry-run
@@ -43,4 +47,4 @@ jobs:
 
       - name: Run ShellCheck
         run: |
-          shellcheck install.sh diagnose.sh repair.sh status.sh uninstall.sh clean-install.sh
+          shellcheck install.sh diagnose.sh repair.sh status.sh uninstall.sh clean-install.sh enable-nonpe.sh enabled-nonpe.sh

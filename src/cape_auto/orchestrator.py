@@ -2736,12 +2736,16 @@ WantedBy=multi-user.target
                 "snapshot", f"{vm_name}/{snap_name}",
                 ResourceOwnership.CREATED_BY_INSTALLER,
             )
-            # Verify snapshot
-            verify = self._cmd.run(["virsh", "snapshot-list", vm_name])
-            if snap_name in verify.stdout:
-                logger.info("Snapshot created and verified")
+            # Verify snapshot exists and is in 'running' state with RAM
+            snap_info = self._cmd.run(["virsh", "snapshot-info", vm_name, snap_name])
+            if snap_info.success and "running" in snap_info.stdout:
+                logger.info(f"Snapshot '{snap_name}' created and verified in live 'running' state with RAM")
             else:
-                raise StageError("Snapshot created but verification failed", stage="SNAPSHOT")
+                verify = self._cmd.run(["virsh", "snapshot-list", vm_name])
+                if snap_name in verify.stdout:
+                    logger.info("Snapshot created and verified in snapshot list")
+                else:
+                    raise StageError("Snapshot created but verification failed", stage="SNAPSHOT")
         else:
             raise StageError(f"Snapshot creation failed: {result.stderr}", stage="SNAPSHOT")
 
