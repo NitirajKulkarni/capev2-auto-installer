@@ -1782,7 +1782,7 @@ After=network.target
 Type=simple
 User=root
 Group=root
-ExecStart={py_bin} {cape_root}/utils/rooter.py
+ExecStart={py_bin} {cape_root}/utils/rooter.py -g {cape_user}
 Restart=always
 RestartSec=5
 

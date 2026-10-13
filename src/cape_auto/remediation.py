@@ -112,13 +112,25 @@ class RemediationEngine:
         # Classify failure
         stderr_combined = (status.stderr + "\n" + journal.stdout).lower()
 
-        if "modulenotfounderror" in stderr_combined or "importerror" in stderr_combined:
-            logger.info("Detected Python import error - attempting environment repair")
-            return self.repair_python_env()
+        cape_root = "/opt/CAPEv2"
+        venv_py = os.path.join(cape_root, ".venv", "bin", "python")
+        py_bin = venv_py if os.path.isfile(venv_py) else "/usr/bin/python3"
 
-        if "address already in use" in stderr_combined or "port" in stderr_combined:
-            logger.info("Detected port conflict")
-            return self._handle_port_conflict(service_name, stderr_combined)
+        if "modulenotfounderror" in stderr_combined or "importerror" in stderr_combined:
+            # Check if this is an actual active import error or just stale historical log
+            py_test = self._cmd.run([py_bin, "-c", "import sys; sys.path.insert(0, '/opt/CAPEv2'); import lib.cuckoo.core.startup"])
+            if not py_test.success:
+                logger.info("Verified active Python import error - attempting environment repair")
+                return self.repair_python_env()
+            else:
+                logger.debug("Python core startup module imports cleanly; ignoring historical journal import error")
+
+        if "already running" in stderr_combined or "cuckoo.pid" in stderr_combined or "address already in use" in stderr_combined or "port" in stderr_combined:
+            logger.info("Detected stale instance or port/socket conflict - purging stale processes and PID locks")
+            self._cmd.run("pkill -9 -f 'cuckoo.py' || true", shell=True)
+            self._cmd.run("pkill -9 -f 'process.py' || true", shell=True)
+            self._cmd.run("rm -f /opt/CAPEv2/cuckoo.pid /opt/CAPEv2/storage/cuckoo.pid /tmp/cuckoo-rooter", shell=True)
+            return self.repair_cape_services()
 
         if "permission denied" in stderr_combined:
             logger.info("Detected permission issue")
@@ -128,18 +140,45 @@ class RemediationEngine:
         return False
 
     def repair_cape_services(self) -> bool:
-        """Repair and ensure all CAPEv2 systemd services are active."""
-        logger.info("Ensuring all CAPEv2 systemd services are properly configured and running...")
+        """Purge stale processes, clear locks, rewrite units with correct arguments, and start all CAPEv2 services."""
+        logger.info("Performing clean reset and startup of all CAPEv2 systemd services...")
         cape_root = "/opt/CAPEv2"
         venv_py = os.path.join(cape_root, ".venv", "bin", "python")
         py_bin = venv_py if os.path.isfile(venv_py) else "/usr/bin/python3"
         cape_user = "cape"
 
-        # 1. Enforce correct ownership and libvirt/kvm group membership
+        # 1. Stop all systemd services first
+        for svc in ["cape", "cape-processor", "cape-web", "cape-rooter"]:
+            self._cmd.run(["systemctl", "stop", f"{svc}.service"])
+
+        # 2. Force-kill any orphaned processes holding ports, sockets, or PID files
+        logger.info("Killing any lingering orphaned CAPE python processes...")
+        self._cmd.run("pkill -9 -f 'cuckoo.py' || true", shell=True)
+        self._cmd.run("pkill -9 -f 'process.py' || true", shell=True)
+        self._cmd.run("pkill -9 -f 'rooter.py' || true", shell=True)
+        self._cmd.run("pkill -9 -f 'manage.py runserver' || true", shell=True)
+
+        # 3. Remove stale lock files, PID files, and rooter sockets
+        logger.info("Purging stale PID files, locks, and UNIX domain sockets...")
+        stale_files = [
+            os.path.join(cape_root, "cuckoo.pid"),
+            os.path.join(cape_root, "storage", "cuckoo.pid"),
+            "/tmp/cuckoo-rooter",
+            "/tmp/cuckoo-rooter.sock",
+            "/var/run/cuckoo-rooter/rooter.sock",
+        ]
+        for sf in stale_files:
+            try:
+                if os.path.exists(sf):
+                    os.unlink(sf)
+            except Exception:
+                pass
+
+        # 4. Enforce correct ownership and libvirt/kvm group membership
         self.repair_cape_permissions(cape_root, cape_user)
         self._cmd.run(["usermod", "-aG", "libvirt,kvm", cape_user])
 
-        # 2. Synthesize correct systemd service units to overwrite broken Poetry references
+        # 5. Synthesize clean systemd service units with verified arguments
         units = {
             "cape-rooter": f"""[Unit]
 Description=CAPE Rooter Service
@@ -149,7 +188,7 @@ After=network.target
 Type=simple
 User=root
 Group=root
-ExecStart={py_bin} {cape_root}/utils/rooter.py
+ExecStart={py_bin} {cape_root}/utils/rooter.py -g {cape_user}
 Restart=always
 RestartSec=5
 
@@ -226,16 +265,28 @@ WantedBy=multi-user.target
 
         self._cmd.run(["systemctl", "daemon-reload"])
 
-        # 3. Enable and start in required dependency order
+        # 6. Enable and start in required dependency order with health verification
         services = ["cape-rooter", "cape", "cape-processor", "cape-web"]
         all_ok = True
+        import time
         for svc in services:
             svc_name = f"{svc}.service"
             self._cmd.run(["systemctl", "enable", svc_name])
-            active = self._cmd.run(["systemctl", "is-active", svc_name])
-            if active.stdout.strip() != "active":
-                logger.info(f"Service {svc} is not active ({active.stdout.strip()}). Starting/repairing...")
-                if not self.repair_service(svc):
+            logger.info(f"Starting {svc_name}...")
+            self._cmd.run(["systemctl", "start", svc_name], timeout=30)
+            time.sleep(2)
+            check = self._cmd.run(["systemctl", "is-active", svc_name])
+            if check.stdout.strip() == "active":
+                logger.info(f"[+] Service {svc} is ACTIVE")
+            else:
+                logger.warning(f"[-] Service {svc} is {check.stdout.strip()}. Restarting once...")
+                self._cmd.run(["systemctl", "restart", svc_name], timeout=30)
+                time.sleep(2)
+                check2 = self._cmd.run(["systemctl", "is-active", svc_name])
+                if check2.stdout.strip() == "active":
+                    logger.info(f"[+] Service {svc} is ACTIVE on restart")
+                else:
+                    logger.error(f"[!] Service {svc} failed to remain active: {check2.stdout.strip()}")
                     all_ok = False
         return all_ok
 
