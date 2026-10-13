@@ -2175,9 +2175,16 @@ WantedBy=multi-user.target
                 logger.info("Downloading 7-Zip silent installer for archive analysis...")
                 self._cmd.run(["curl", "-sL", "https://www.7-zip.org/a/7z2408-x64.exe", "-o", sevenzip_installer], timeout=60)
 
-            if not os.path.isfile(pdf_installer):
+            if not os.path.isfile(pdf_installer) or os.path.getsize(pdf_installer) < 1000000:
                 logger.info("Downloading SumatraPDF installer for PDF analysis...")
-                self._cmd.run(["curl", "-sL", "https://github.com/sumatrapdfreader/sumatrapdf/releases/download/v3.5.2/SumatraPDF-3.5.2-64-install.exe", "-o", pdf_installer], timeout=60)
+                self._cmd.run(["curl", "-sSLf", "https://www.sumatrapdfreader.org/dl/rel/3.5.2/SumatraPDF-3.5.2-64-install.exe", "-o", pdf_installer], timeout=60)
+                if not os.path.isfile(pdf_installer) or os.path.getsize(pdf_installer) < 1000000:
+                    self._cmd.run(["curl", "-sSLf", "https://github.com/sumatrapdfreader/sumatrapdf/releases/download/v3.5.2/SumatraPDF-3.5.2-64-install.exe", "-o", pdf_installer], timeout=60)
+            if os.path.isfile(pdf_installer) and os.path.getsize(pdf_installer) < 1000000:
+                try:
+                    os.remove(pdf_installer)
+                except OSError:
+                    pass
         except Exception as e:
             logger.warning(f"Note on downloading non-PE guest tools: {e}")
 

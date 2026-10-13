@@ -65,7 +65,19 @@ powercfg -x -standby-timeout-ac 0
 powercfg -x -hibernate-timeout-ac 0
 powercfg -x -monitor-timeout-ac 0
 
-# 8. Install Python and CAPE Agent from the Unattended ISO
+# 8. Disable Windows Boot Recovery & Startup Repair ("Windows didn't load correctly" screen)
+try {
+    bcdedit /set "{default}" bootstatuspolicy ignoreallfailures | Out-Null
+    bcdedit /set "{default}" recoveryenabled no | Out-Null
+    bcdedit /set "{current}" bootstatuspolicy ignoreallfailures | Out-Null
+    bcdedit /set "{current}" recoveryenabled no | Out-Null
+    bcdedit /set "{default}" timeout 0 | Out-Null
+    chkntfs /x c: | Out-Null
+} catch {
+    Write-Output "[!] Note on BCD recovery settings: $_"
+}
+
+# 9. Install Python and CAPE Agent from the Unattended ISO
 Write-Output "[*] Locating installation media..."
 $isoDrive = (Get-PSDrive -PSProvider FileSystem | Where-Object { Test-Path (Join-Path $_.Root "python-installer.exe") }).Root
 if (-not $isoDrive) {

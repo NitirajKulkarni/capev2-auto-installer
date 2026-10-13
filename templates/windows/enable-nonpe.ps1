@@ -78,7 +78,20 @@ try {
     Write-Host "[!] Note on Script ExecutionPolicy: $_" -ForegroundColor DarkGray
 }
 
-# 7. Locate Optical / Shared Drive (OEMDRV / Drive E: / D:)
+# 7. Disable Windows Boot Recovery & Startup Repair ("Windows didn't load correctly")
+Write-Host "[*] Disabling Windows Boot Recovery & Automatic Startup Repair..." -ForegroundColor Yellow
+try {
+    bcdedit /set "{default}" bootstatuspolicy ignoreallfailures | Out-Null
+    bcdedit /set "{default}" recoveryenabled no | Out-Null
+    bcdedit /set "{current}" bootstatuspolicy ignoreallfailures | Out-Null
+    bcdedit /set "{current}" recoveryenabled no | Out-Null
+    bcdedit /set "{default}" timeout 0 | Out-Null
+    chkntfs /x c: | Out-Null
+} catch {
+    Write-Host "[!] Note on BCD recovery settings: $_" -ForegroundColor DarkGray
+}
+
+# 8. Locate Optical / Shared Drive (OEMDRV / Drive E: / D:)
 Write-Host "[*] Locating installation media on optical/shared drive..." -ForegroundColor Yellow
 $mediaDrive = (Get-PSDrive -PSProvider FileSystem | Where-Object { 
     (Test-Path (Join-Path $_.Root "agent.pyw")) -or 
@@ -123,12 +136,18 @@ if (-not $pdfInstaller) {
     $pdfInstaller = Get-ChildItem -Path $mediaDrive -Filter "*pdf*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
-if ($pdfInstaller) {
-    Write-Host "[*] Installing PDF Reader silently from $($pdfInstaller.FullName)..." -ForegroundColor Yellow
-    $p = Start-Process -FilePath $pdfInstaller.FullName -ArgumentList "-s -all-users" -Wait -PassThru
-    Write-Host "[+] PDF Reader installed successfully!" -ForegroundColor Green
+if ($pdfInstaller -and (Get-Item $pdfInstaller.FullName).Length -gt 1048576) {
+    try {
+        Write-Host "[*] Installing PDF Reader silently from $($pdfInstaller.FullName)..." -ForegroundColor Yellow
+        $p = Start-Process -FilePath $pdfInstaller.FullName -ArgumentList "-s -all-users" -Wait -PassThru
+        if ($p.ExitCode -eq 0) {
+            Write-Host "[+] PDF Reader installed successfully!" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[!] Note on PDF installer execution: $_" -ForegroundColor DarkGray
+    }
 } else {
-    Write-Host "[!] PDF Reader installer not found on media drive. Skipping PDF reader." -ForegroundColor DarkGray
+    Write-Host "[*] Using Windows default PDF handler (Edge)..." -ForegroundColor Yellow
 }
 
 # 10. Install Python 3.10 if not already present
@@ -163,12 +182,16 @@ if (Test-Path $pythonExe) {
 Get-Process -Name "python", "pythonw" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -eq "" } | Stop-Process -Force -ErrorAction SilentlyContinue
 
 Write-Host "[*] Starting CAPEv2 Agent daemon on port 8000..." -ForegroundColor Yellow
-if (Test-Path $pythonwExe -and (Test-Path $targetAgent)) {
+if ((Test-Path $pythonwExe) -and (Test-Path $targetAgent)) {
     Start-Process -FilePath $pythonwExe -ArgumentList "`"$targetAgent`"" -WindowStyle Hidden
-} elseif (Test-Path $pythonExe -and (Test-Path $targetAgent)) {
+} elseif ((Test-Path $pythonExe) -and (Test-Path $targetAgent)) {
     Start-Process -FilePath $pythonExe -ArgumentList "`"$targetAgent`"" -WindowStyle Hidden
+} elseif (Test-Path $pythonwExe) {
+    Start-Process -FilePath $pythonwExe -ArgumentList "`"$agentSource`"" -WindowStyle Hidden
+} elseif (Test-Path $pythonExe) {
+    Start-Process -FilePath $pythonExe -ArgumentList "`"$agentSource`"" -WindowStyle Hidden
 } else {
-    Write-Host "[-] WARNING: pythonw.exe or agent.pyw not found!" -ForegroundColor Red
+    Write-Host "[-] WARNING: Python executable not found!" -ForegroundColor Red
 }
 
 # Verification
