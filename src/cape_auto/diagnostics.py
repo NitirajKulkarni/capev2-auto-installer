@@ -478,9 +478,10 @@ class DiagnosticsEngine:
                         "Run repair to automatically convert snapshot to live 'running' state with RAM: sudo ./repair.sh"
                     )
             else:
-                result.status = HealthStatus.WARN.value
-                result.symptoms.append("Snapshot 'cape-clean' missing for VM 'cape-win'")
-                result.recommended_repairs.append("Create baseline snapshot 'cape-clean'")
+                result.status = HealthStatus.FAIL.value
+                result.severity = "high"
+                result.symptoms.append("Snapshot 'cape-clean' missing for VM 'cape-win' (required by CAPEv2)")
+                result.recommended_repairs.append("Create baseline snapshot 'cape-clean': sudo ./repair.sh")
         else:
             result.raw_data["snapshots"] = "unavailable"
 
