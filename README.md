@@ -210,6 +210,7 @@ The guest deployment process is split into three clean phases:
 | `sudo ./install.sh` | **Install** | Runs discovery, dependencies, KVM, CAPE, and guest provisioning. |
 | `sudo ./clean-install.sh` | **Clean Install** | Wipes previous VMs, disks, networks, `/opt/CAPEv2`, and state, then reinstalls. |
 | `sudo ./install.sh --clean-install` | **Clean Install** | Same as `./clean-install.sh` (can combine with custom options). |
+| `sudo ./enable-nonpe.sh` | **Enable Non-PE** | Stages 7-Zip, SumatraPDF & script handlers onto drive `E:`, captures clean baseline snapshot. |
 | `sudo ./install.sh --resume` | **Resume** | Resumes seamlessly from the last recorded atomic checkpoint. |
 | `sudo ./diagnose.sh` | **Diagnose** | Audits 11 subsystems (KVM, libvirt, network, PostgreSQL/MongoDB, services). |
 | `sudo ./diagnose.sh --watch` | **Live Monitor** | Real-time continuous subsystem status dashboard. |
@@ -454,6 +455,25 @@ sudo /opt/CAPEv2/.venv/bin/pip install libvirt-python certvalidator asn1crypto m
 # 3. Restart all services:
 sudo systemctl restart cape-rooter cape cape-processor cape-web
 ```
+
+---
+
+### Q13: How do I enable and run Non-PE files (PowerShell, Batch, VBS, JS, PDF, Office, Archives)?
+**Automated 1-Command Solution:**  
+```bash
+sudo ./enable-nonpe.sh
+# (or: sudo ./enabled-nonpe.sh)
+```
+
+**What this automatically does:**
+1. **Host-Side Parsers:** Compiles `batch_deobfuscator`, `httpreplay`, `oletools`, `xlmmacrodeobfuscator`, `pdfminer.six`, `certvalidator`, and archive extractors into `/opt/CAPEv2/.venv`.
+2. **Drive E: (OEMDRV Media Staging):** Downloads and stages silent installers for **7-Zip** (archives: `.zip`, `.rar`, `.7z`) and **SumatraPDF** (documents: `.pdf`), alongside `enable-nonpe.ps1` and `agent.pyw` into `/var/lib/libvirt/images/cape-win-unattend.iso` mounted on **Drive E:**.
+3. **Guest Configuration:** Inside the Windows VM (`cape-win`), open Administrator PowerShell and run:
+   ```powershell
+   powershell -ep bypass -f E:\enable-nonpe.ps1
+   ```
+   *This silently installs 7-Zip, SumatraPDF, sets PowerShell ExecutionPolicy to `Bypass`, enables Windows Script Host (`.vbs`, `.js`, `.wsf`), disables Defender, and launches the CAPE agent.*
+4. **Snapshot Capture:** The script automatically polls `http://192.168.250.100:8000/`, captures the new clean baseline snapshot (`cape-clean`), registers it in `kvm.conf`, and restarts all CAPEv2 services!
 
 ---
 

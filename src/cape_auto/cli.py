@@ -73,6 +73,8 @@ Examples:
                            help="Uninstall CAPE resources created by this tool")
     mode_group.add_argument("--update", action="store_true",
                            help="Update existing CAPEv2 installation")
+    mode_group.add_argument("--enable-nonpe", "--configure-nonpe", action="store_true",
+                           help="Configure Non-PE analysis environment, update drive E: media, and save baseline snapshot")
 
     parser.add_argument("--non-interactive", action="store_true",
                        help="Suppress interactive prompts")
@@ -168,6 +170,8 @@ def main() -> int:
             )
         elif args.update:
             return orchestrator.update()
+        elif args.enable_nonpe:
+            return 0 if orchestrator.enable_nonpe() else 1
         elif args.from_stage:
             return orchestrator.install(from_stage=args.from_stage)
         elif args.reset_failed:

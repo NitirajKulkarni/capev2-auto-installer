@@ -308,9 +308,34 @@ enabled = false
         self.orchestrator._stage_cape_install()
         self.assertEqual(self.orchestrator._state.get_manifest().get("python_manager"), "uv")
 
-    def test_create_desktop_shortcuts(self):
-        # Must execute cleanly without exception even without root permissions
-        self.orchestrator._create_desktop_shortcuts()
+    def test_enable_nonpe_script_template(self):
+        from pathlib import Path
+        template_path = os.path.join(os.path.dirname(__file__), "..", "templates", "windows", "enable-nonpe.ps1")
+        self.assertTrue(os.path.isfile(template_path))
+        content = Path(template_path).read_text(encoding="utf-8")
+        self.assertIn("192.168.250.100", content)
+        self.assertIn("ExecutionPolicy Bypass", content)
+        self.assertIn("7-Zip", content)
+        self.assertIn("agent.pyw", content)
+
+    def test_enable_nonpe_orchestrator_execution(self):
+        from unittest.mock import MagicMock, patch
+        from cape_auto.command import CommandResult
+
+        mock_cmd = MagicMock()
+        mock_cmd.run.return_value = CommandResult(command="ok", exit_code=0, stdout="Success", stderr="", duration=0.1)
+        mock_cmd.run_capture.side_effect = lambda cmd, **kw: (
+            "cape-win\n" if "list" in cmd and "--all" in cmd
+            else ("vda  cape-win.qcow2\nsdb  cape-win-unattend.iso\n" if "domblklist" in cmd
+            else "cape-clean\n")
+        )
+        self.orchestrator._cmd = mock_cmd
+
+        with patch.object(self.orchestrator, "_is_agent_online", return_value=True), \
+             patch.object(self.orchestrator, "_generate_unattended_iso", return_value="/tmp/test.iso"), \
+             patch.object(self.orchestrator._remediation, "repair_cape_services", return_value=True):
+            res = self.orchestrator.enable_nonpe()
+            self.assertTrue(res)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ Usage:
     sudo ./install.sh --from-stage <s>  Resume from specific stage
     sudo ./install.sh --reset-failed    Reset failed stage and retry
     sudo ./install.sh --update          Update existing CAPEv2
+    sudo ./install.sh --enable-nonpe    Configure Non-PE analysis environment & save baseline snapshot
     sudo ./install.sh --self-test       Run framework self-tests
     sudo ./install.sh --auto-download-iso Auto-download official Windows Eval ISO
     sudo ./install.sh --windows-edition <ed> Windows edition: win10_eval (default) or win11_eval

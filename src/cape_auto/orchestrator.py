@@ -2150,21 +2150,36 @@ WantedBy=multi-user.target
 
         template_xml = os.path.join(self._project_dir, "templates", "windows", "autounattend.xml")
         template_ps1 = os.path.join(self._project_dir, "templates", "windows", "setup-agent.ps1")
+        template_nonpe = os.path.join(self._project_dir, "templates", "windows", "enable-nonpe.ps1")
 
         target_xml = os.path.join(staging_dir, "Autounattend.xml")
         target_ps1 = os.path.join(staging_dir, "setup-agent.ps1")
+        target_nonpe = os.path.join(staging_dir, "enable-nonpe.ps1")
         
         # Download Python 3.10 and CAPE agent into the staging dir so they are baked into the ISO
         python_installer = os.path.join(staging_dir, "python-installer.exe")
         agent_py = os.path.join(staging_dir, "agent.pyw")
+        sevenzip_installer = os.path.join(staging_dir, "7z-installer.exe")
+        pdf_installer = os.path.join(staging_dir, "sumatrapdf-installer.exe")
+
         try:
-            logger.info("Downloading Python 3.10 for Windows VM...")
-            self._cmd.run_checked(["curl", "-sL", "https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe", "-o", python_installer])
+            if not os.path.isfile(python_installer):
+                logger.info("Downloading Python 3.10 for Windows VM...")
+                self._cmd.run(["curl", "-sL", "https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe", "-o", python_installer], timeout=120)
             
-            logger.info("Downloading official CAPEv2 agent.py for Windows VM...")
-            self._cmd.run_checked(["curl", "-sL", "https://raw.githubusercontent.com/kevoreilly/CAPEv2/master/agent/agent.py", "-o", agent_py])
+            if not os.path.isfile(agent_py):
+                logger.info("Downloading official CAPEv2 agent.py for Windows VM...")
+                self._cmd.run(["curl", "-sL", "https://raw.githubusercontent.com/kevoreilly/CAPEv2/master/agent/agent.py", "-o", agent_py], timeout=60)
+
+            if not os.path.isfile(sevenzip_installer):
+                logger.info("Downloading 7-Zip silent installer for archive analysis...")
+                self._cmd.run(["curl", "-sL", "https://www.7-zip.org/a/7z2408-x64.exe", "-o", sevenzip_installer], timeout=60)
+
+            if not os.path.isfile(pdf_installer):
+                logger.info("Downloading SumatraPDF installer for PDF analysis...")
+                self._cmd.run(["curl", "-sL", "https://github.com/sumatrapdfreader/sumatrapdf/releases/download/v3.5.2/SumatraPDF-3.5.2-64-install.exe", "-o", pdf_installer], timeout=60)
         except Exception as e:
-            logger.warning(f"Failed to download VM dependencies (Agent might not be setup): {e}")
+            logger.warning(f"Note on downloading non-PE guest tools: {e}")
 
         import shutil
         if os.path.isfile(template_xml):
@@ -2176,6 +2191,11 @@ WantedBy=multi-user.target
             shutil.copy2(template_ps1, target_ps1)
         else:
             logger.warning(f"Agent script template {template_ps1} not found")
+
+        if os.path.isfile(template_nonpe):
+            shutil.copy2(template_nonpe, target_nonpe)
+        else:
+            logger.warning(f"Non-PE script template {template_nonpe} not found")
 
         iso_dir = "/var/lib/libvirt/images"
         if not os.path.isdir(iso_dir):
@@ -3053,3 +3073,195 @@ StartupNotify=true
                 pass
 
         print("  " + "-" * 40)
+
+    def enable_nonpe(self) -> bool:
+        """
+        Configure all host and guest components for Non-PE malware analysis:
+        1. Host: Installs batch_deobfuscator, httpreplay, oletools, xlmmacrodeobfuscator,
+           pdfminer.six, certvalidator, asn1crypto, and mscerts into /opt/CAPEv2/.venv.
+        2. Guest media: Generates / updates unattend ISO (drive E:) with 7-Zip, SumatraPDF,
+           enable-nonpe.ps1, setup-agent.ps1, and agent.pyw.
+        3. Media update: Updates live virtual CD-ROM in cape-win domain.
+        4. Validation: Polls Windows guest agent on port 8000.
+        5. Snapshot: Captures clean baseline snapshot 'cape-clean' and updates kvm.conf.
+        6. Microservices: Cleanly restarts all 4 CAPE services in dependency order.
+        """
+        logger.info("═" * 70)
+        logger.info("  CAPEv2 AUTOMATED NON-PE ENVIRONMENT ENABLER")
+        logger.info("═" * 70)
+
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+        vm_name = self._config.get_str("guest.name", "cape-win")
+        snap_name = self._config.get_str("guest.snapshot_name", "cape-clean")
+        venv_python = os.path.join(cape_root, ".venv", "bin", "python")
+        uv_bin = "/usr/local/bin/uv" if os.path.isfile("/usr/local/bin/uv") else "uv"
+
+        # ─── STEP 1: Host-Side Python Dependencies ───────────────────────────
+        logger.info("[1/5] Auditing and compiling host-side non-PE parsers into CAPE virtualenv...")
+        self._cmd.run(["apt-get", "install", "-y", "pkg-config", "libvirt-dev", "python3-libvirt", "genisoimage"])
+
+        if os.path.isfile(venv_python):
+            logger.info("Installing macro extractors, deobfuscators, and cert validators...")
+            if os.path.isfile(uv_bin):
+                self._cmd.run([
+                    uv_bin, "pip", "install", "--python", venv_python,
+                    "libvirt-python", "certvalidator", "asn1crypto", "mscerts",
+                    "oletools", "xlmmacrodeobfuscator", "pdfminer.six",
+                    "pyzipper", "rarfile", "py7zr"
+                ], timeout=300)
+            else:
+                self._cmd.run([
+                    venv_python, "-m", "pip", "install", "--prefer-binary",
+                    "libvirt-python", "certvalidator", "asn1crypto", "mscerts",
+                    "oletools", "xlmmacrodeobfuscator", "pdfminer.six",
+                    "pyzipper", "rarfile", "py7zr"
+                ], timeout=300)
+
+            # Install GitHub git packages for batch deobfuscation & HTTP replay
+            logger.info("Installing DissectMalware/batch_deobfuscator and httpreplay...")
+            self._cmd.run([
+                venv_python, "-m", "pip", "install", "-U",
+                "git+https://github.com/DissectMalware/batch_deobfuscator",
+                "git+https://github.com/CAPESandbox/httpreplay"
+            ], timeout=300)
+
+            self._cmd.run(["chown", "-R", f"{cape_user}:{cape_user}", cape_root], timeout=60)
+        else:
+            logger.warning(f"Virtualenv python not found at {venv_python}; skipping pip installations.")
+
+        # ─── STEP 2: Generate / Update Drive E: ISO (OEMDRV) ─────────────────
+        logger.info("[2/5] Baking non-PE installers and automation scripts into drive E: ISO...")
+        iso_path = self._generate_unattended_iso(vm_name)
+        logger.info(f"Answer ISO prepared: {iso_path}")
+
+        # ─── STEP 3: Mount / Update Media on VM ──────────────────────────────
+        logger.info(f"[3/5] Updating media on virtual machine '{vm_name}'...")
+        vm_list = self._cmd.run_capture(["virsh", "list", "--all"])
+        if vm_name not in vm_list:
+            logger.error(f"VM '{vm_name}' does not exist in libvirt! Run ./install.sh first.")
+            return False
+
+        vm_running = self._cmd.run(["virsh", "list", "--state-running"]).stdout
+        if vm_name not in vm_running:
+            logger.info(f"Starting VM '{vm_name}' to access drive E:...")
+            self._cmd.run(["virsh", "start", vm_name])
+            import time
+            time.sleep(5)
+
+        # Locate the optical/CD-ROM device to update media
+        blklist = self._cmd.run_capture(["virsh", "domblklist", vm_name])
+        cdrom_target = None
+        for line in blklist.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 1:
+                target = parts[0]
+                if "unattend" in line or target in ("sdb", "sdc", "hdb", "hdc"):
+                    cdrom_target = target
+                    break
+
+        if cdrom_target:
+            logger.info(f"Inserting updated ISO into CD-ROM device '{cdrom_target}' (drive E: in Windows)...")
+            self._cmd.run(["virsh", "change-media", vm_name, cdrom_target, iso_path, "--update"], quiet=True)
+            self._cmd.run(["virsh", "change-media", vm_name, cdrom_target, iso_path, "--insert"], quiet=True)
+
+        # ─── STEP 4: Guide User & Poll for Agent Readiness ───────────────────
+        logger.info("[4/5] Checking Windows guest agent readiness...")
+        agent_url = "http://192.168.250.100:8000/"
+
+        print("\n" + "=" * 78)
+        print("  WINDOWS GUEST NON-PE CONFIGURATION")
+        print("=" * 78)
+        print("  All required non-PE files are now accessible on Windows Drive E: (OEMDRV)!")
+        print("\n  Inside the Windows Guest (Administrator PowerShell):")
+        print("    powershell -ep bypass -f E:\\enable-nonpe.ps1")
+        print("    (or navigate to Drive E: in Explorer and right-click -> Run with PowerShell)")
+        print("\n  This script will automatically:")
+        print("    - Install 7-Zip silently for archive extraction (.zip, .rar, .7z, .iso)")
+        print("    - Install SumatraPDF silently for PDF analysis (.pdf)")
+        print("    - Enable PowerShell ExecutionPolicy Bypass (.ps1)")
+        print("    - Enable Windows Script Host (.vbs, .js, .wsf) and Batch (.bat, .cmd)")
+        print("    - Disable Defender real-time scanning & UAC")
+        print("    - Launch the CAPE agent daemon listening on port 8000")
+        print("=" * 78 + "\n")
+
+        import time
+        online = False
+        start_wait = time.time()
+        timeout_seconds = 300  # 5 minutes
+
+        logger.info(f"Polling {agent_url} for CAPE Agent handshake (timeout: {timeout_seconds}s)...")
+        while time.time() - start_wait < timeout_seconds:
+            if self._is_agent_online(agent_url, timeout=2):
+                online = True
+                break
+            time.sleep(4)
+
+        if not online:
+            logger.warning(
+                f"Agent not detected at {agent_url} yet. If Windows was rebooted, "
+                "the agent starts automatically upon desktop login."
+            )
+            # Ask or retry once more
+            for _ in range(5):
+                if self._is_agent_online(agent_url, timeout=3):
+                    online = True
+                    break
+                time.sleep(3)
+
+        if not online:
+            logger.error(
+                "Guest agent did not respond with HTTP 200 within timeout period.\n"
+                "Please verify that E:\\enable-nonpe.ps1 finished in Windows, then re-run:\n"
+                "  sudo ./enable-nonpe.sh"
+            )
+            return False
+
+        logger.info(f"Agent successfully responded HTTP 200 OK at {agent_url}!")
+        time.sleep(3)
+
+        # ─── STEP 5: Capture Clean Baseline Snapshot & Save ───────────────────
+        logger.info(f"[5/5] Capturing and saving clean baseline snapshot '{snap_name}' for '{vm_name}'...")
+        # Remove old snapshot if present
+        self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name], quiet=True)
+
+        snap_res = self._cmd.run([
+            "virsh", "snapshot-create-as", vm_name, snap_name,
+            "--description", "Clean Non-PE and PE Baseline Snapshot",
+            "--disk-only", "--atomic"
+        ])
+
+        if not snap_res.success:
+            # Fallback to standard snapshot
+            snap_res = self._cmd.run([
+                "virsh", "snapshot-create-as", vm_name, snap_name,
+                "--description", "Clean Non-PE and PE Baseline Snapshot"
+            ])
+
+        if not snap_res.success:
+            logger.error(f"Snapshot capture failed: {snap_res.stderr or snap_res.stdout}")
+            return False
+
+        logger.info(f"Baseline snapshot '{snap_name}' saved successfully!")
+
+        # Update machinery configuration
+        self._stage_machinery_config()
+
+        # Restart all CAPE services cleanly
+        logger.info("Restarting CAPEv2 microservices in verified order...")
+        self._remediation.repair_cape_services()
+
+        print("\n" + "=" * 78)
+        print("  NON-PE ENVIRONMENT ENABLED & BASELINE IMAGE SAVED SUCCESSFULLY!")
+        print("=" * 78)
+        print(f"  Virtual Machine:      {vm_name}")
+        print(f"  Saved Baseline:       {snap_name}")
+        print("  Supported Formats:    PE (.exe, .dll)")
+        print("                        Scripts (.ps1, .bat, .cmd, .vbs, .js, .wsf, .hta)")
+        print("                        Documents (.pdf, .doc, .docx, .xls, .xlsx)")
+        print("                        Archives (.zip, .rar, .7z, .iso)")
+        print("  Web Dashboard:        http://127.0.0.1:8000")
+        print("=" * 78 + "\n")
+
+        return True
+
