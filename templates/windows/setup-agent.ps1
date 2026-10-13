@@ -51,12 +51,21 @@ Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
 # 5. Disable Windows Firewall
 Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False -ErrorAction SilentlyContinue
 
-# 6. Disable Sleep, Screen Timeout & Hibernation
+# 6. Enable script execution (PowerShell .ps1, VBScript, JScript, WSF)
+try {
+    Set-ExecutionPolicy -ExecutionPolicy Bypass -Force -Scope LocalMachine -ErrorAction SilentlyContinue
+    Set-ExecutionPolicy -ExecutionPolicy Bypass -Force -Scope CurrentUser -ErrorAction SilentlyContinue
+    reg add "HKLM\SOFTWARE\Microsoft\Windows Script Host\Settings" /v "Enabled" /t REG_DWORD /d 1 /f | Out-Null
+} catch {
+    Write-Output "[!] Note on script settings: $_"
+}
+
+# 7. Disable Sleep, Screen Timeout & Hibernation
 powercfg -x -standby-timeout-ac 0
 powercfg -x -hibernate-timeout-ac 0
 powercfg -x -monitor-timeout-ac 0
 
-# 7. Install Python and CAPE Agent from the Unattended ISO
+# 8. Install Python and CAPE Agent from the Unattended ISO
 Write-Output "[*] Locating installation media..."
 $isoDrive = (Get-PSDrive -PSProvider FileSystem | Where-Object { Test-Path (Join-Path $_.Root "python-installer.exe") }).Root
 if (-not $isoDrive) {
