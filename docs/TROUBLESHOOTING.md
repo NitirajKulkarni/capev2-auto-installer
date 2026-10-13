@@ -1,182 +1,188 @@
-# CAPEv2 Automated Installer - Troubleshooting Guide
+# 🩺 Comprehensive Troubleshooting & Remediation Guide
 
-This guide covers common issues encountered during CAPEv2 installation and how the automated installer detects, diagnoses, and repairs them.
+This guide details diagnostics, root cause analyses, and automated remedies for common issues encountered across the host, hypervisor, virtual network, and guest sandbox stack.
 
 ---
 
-## 1. Hardware Virtualization Issues (`/dev/kvm` Missing)
+## 📑 Table of Contents
 
-### Symptom
-- Preflight or KVM stage reports: `No hardware virtualization support detected` or `/dev/kvm does not exist`.
+- [1. VM Snapshot & State Failures](#1-vm-snapshot--state-failures)
+  - [Symptom A: `Snapshot 'cape-clean' is not in a 'running' state (current state: 'disk-snapshot')`](#symptom-a-snapshot-cape-clean-is-not-in-a-running-state-current-state-disk-snapshot)
+  - [Symptom B: `Snapshot 'cape-clean' already exists in one or more devices`](#symptom-b-snapshot-cape-clean-already-exists-in-one-or-more-devices)
+- [2. Task Scheduling & Queue Failures](#2-task-scheduling--queue-failures)
+  - [Symptom: Submitted tasks remain stuck in 'Pending' forever](#symptom-submitted-tasks-remain-stuck-in-pending-forever)
+- [3. In-Guest Package Execution Errors](#3-in-guest-package-execution-errors)
+  - [Symptom A: `CuckooPackageError: Unable to find any EXCEL.EXE executable`](#symptom-a-cuckoopackageerror-unable-to-find-any-excelexe-executable)
+  - [Symptom B: `CuckooPackageError: Unable to find any WinRAR.exe executable`](#symptom-b-cuckoopackageerror-unable-to-find-any-winrarexe-executable)
+- [4. Guest Provisioning & Console Traps](#4-guest-provisioning--console-traps)
+  - [Symptom A: PowerShell freezes during script execution (The QuickEdit Trap)](#symptom-a-powershell-freezes-during-script-execution-the-quickedit-trap)
+  - [Symptom B: `PSSecurityException: UnauthorizedAccess` in guest](#symptom-b-pssecurityexception-unauthorizedaccess-in-guest)
+- [5. Host Virtualization & KVM Failures](#5-host-virtualization--kvm-failures)
+  - [Symptom: `/dev/kvm does not exist` or nested virtualization missing](#symptom-devkvm-does-not-exist-or-nested-virtualization-missing)
+- [6. Python Environment & Library Bindings](#6-python-environment--library-bindings)
+  - [Symptom: `ModuleNotFoundError: No module named 'libvirt'`](#symptom-modulenotfounderror-no-module-named-libvirt)
+- [7. Host Package & Lock Contention](#7-host-package--lock-contention)
+  - [Symptom: `Could not get lock /var/lib/dpkg/lock-frontend`](#symptom-could-not-get-lock-varlibdpkglock-frontend)
 
-### Root Cause
-- VT-x (Intel) or AMD-V (AMD) is disabled in the physical host's BIOS/UEFI.
-- Or running inside a virtual machine (VMware, VirtualBox, Proxmox, AWS, Azure) without **Nested Virtualization** enabled.
+---
 
-### Automated Remediation
-The installer checks whether modules can be loaded:
+## 1. VM Snapshot & State Failures
+
+### Symptom A: `Snapshot 'cape-clean' is not in a 'running' state (current state: 'disk-snapshot')`
+
+#### Root Cause
+CAPEv2 dynamic analysis requires reverting directly into live RAM memory so the VM is immediately operational and listening on port 8000 without undergoing a full OS reboot cycle.  
+If a snapshot was created using `--disk-only` or when the VM was shut down, libvirt flags the snapshot metadata with `<state>disk-snapshot</state>` or `<state>shutoff</state>`. When `cape.service` boots, its preflight check validates that `<state>` equals `running`. Finding anything else triggers `CuckooStartupError` and terminates the daemon.
+
+#### Automated Solution
+Run the self-repair script on the Ubuntu host:
 ```bash
-sudo modprobe kvm
-sudo modprobe kvm_intel # or kvm_amd
+sudo ./repair.sh
+```
+`repair.sh` automatically:
+1. Stops competing daemons (`cape.service`, `cape-processor.service`) to release VM locks.
+2. Boots `cape-win` and polls until the guest agent on port 8000 responds with `HTTP 200 OK`.
+3. Purges invalid snapshot references.
+4. Captures a live snapshot with live RAM state (`<state>running</state>`).
+5. Restarts the full service stack.
+
+---
+
+### Symptom B: `Snapshot 'cape-clean' already exists in one or more devices`
+
+#### Root Cause
+When a snapshot metadata entry is deleted using `virsh snapshot-delete cape-win cape-clean --metadata`, libvirt deletes its XML metadata file from `/var/lib/libvirt/qemu/snapshot/cape-win/`, but **does not purge the internal snapshot tag from the underlying QEMU qcow2 block device header**.  
+When `virsh snapshot-create-as` is called later, QEMU checks the disk block header, finds the duplicate tag `cape-clean`, and aborts.
+
+#### Solution
+Purge the block device header tag directly via the QEMU Monitor (HMP) before recreating:
+```bash
+# 1. Purge block device header entry
+virsh qemu-monitor-command cape-win --hmp 'delvm cape-clean'
+
+# 2. Re-create live snapshot
+virsh snapshot-create-as cape-win cape-clean "Clean Running Baseline"
 ```
 
-### Manual Action Required
-If the CPU does not expose VT-x/AMD-V instructions:
-1. **Physical Machine**: Enter BIOS/UEFI during boot and enable "Intel Virtualization Technology (VT-x)" or "AMD SVM".
-2. **Windows Host (VirtualBox / VMware)**:
-   - On Windows 10/11, Virtualization-Based Security (VBS) or Hyper-V forces VirtualBox into "NEM mode", hiding VT-x from Ubuntu.
-   - Run the automated script: `enable-windows-virtualization.bat` as Administrator on Windows.
-   - Or manually run in elevated CMD:
-     ```cmd
-     bcdedit /set hypervisorlaunchtype off
-     reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v "EnableVirtualizationBasedSecurity" /t REG_DWORD /d 0 /f
-     ```
-   - Then reboot Windows.
-3. **Other Hypervisors**:
-   - Proxmox: Set VM CPU type to `host`.
-   - VMware ESXi: Enable "Expose hardware assisted virtualization to guest OS".
-   - KVM / Libvirt: `<cpu mode='host-passthrough'/>`.
-
 ---
 
-## 2. Package Manager Lock (`/var/lib/dpkg/lock-frontend`)
+## 2. Task Scheduling & Queue Failures
 
-### Symptom
-- APT or DPKG commands fail with: `Could not get lock /var/lib/dpkg/lock-frontend`.
+### Symptom: Submitted tasks remain stuck in 'Pending' forever
 
-### Automated Remediation
-The installer automatically:
-1. Detects `fuser` locks on `/var/lib/dpkg/lock-frontend`.
-2. Waits up to 30 seconds for background unattended-upgrades or apt processes to finish.
-3. Automatically runs `dpkg --configure -a` and `apt-get -f install -y`.
+#### Root Cause
+The CAPEv2 Web UI (`cape-web.service`) only inserts task rows into the database. It does not communicate with KVM or dispatch jobs.  
+Task dispatching and VM state reverting are managed by **`cape.service`** (`cuckoo.py`), while analysis extraction is performed by **`cape-processor.service`** (`utils/process.py`). If either daemon is crashed, disabled, or locked by a stale PID file (`/opt/CAPEv2/cuckoo.pid`), tasks will sit in `pending` indefinitely.
 
----
-
-## 3. Libvirt Socket / Daemon Issues
-
-### Symptom
-- `error: failed to connect to the hypervisor` or `error: Cannot recv data: Connection reset by peer`.
-
-### Automated Remediation
-On Ubuntu 24.04 and 22.04, libvirt can run in modular or monolithic daemon modes.
-The remediation engine automatically:
-1. Inspects `virtqemud.service`, `virtnetworkd.service`, and `libvirtd.service`.
-2. Reloads systemd daemon definitions: `systemctl daemon-reload`.
-3. Restarts active libvirt services and verifies socket accessibility.
-4. Ensures `cape` user is in `libvirt` and `kvm` groups:
+#### Solution
+1. Ensure all 4 microservices are active:
    ```bash
-   sudo usermod -aG libvirt,kvm cape
+   sudo systemctl enable --now cape-rooter cape cape-processor cape-web
    ```
-
----
-
-## 4. Network Subnet Collision
-
-### Symptom
-- `virsh net-start cape-analysis` fails with address conflict error.
-
-### Automated Remediation
-The installer checks existing host network routes and interfaces before creating `virbr-cape`.
-If `192.168.250.0/24` collides with an existing physical or VPN subnet:
-- Edit `config.toml`:
-  ```toml
-  [network]
-  subnet = "192.168.251.0/24"
-  gateway = "192.168.251.1"
-  vm_ip_start = "192.168.251.100"
-  ```
-- Resume the installation:
-  ```bash
-  sudo ./install.sh --resume
-  ```
-
----
-
-## 5. MongoDB Installation / AVX Support
-
-### Symptom
-- MongoDB fails to start (`Illegal instruction (core dumped)`).
-
-### Root Cause
-- MongoDB 5.0+ requires AVX CPU instructions. Some legacy CPUs or VMs with restricted CPU models lack AVX.
-
-### Resolution
-- The preflight check flags missing AVX instructions.
-- If AVX is unavailable, switch `database.backend` in `config.toml` to `postgresql`:
-  ```toml
-  [database]
-  backend = "postgresql"
-  ```
-- Re-run: `sudo ./install.sh --resume`.
-
----
-
-## 6. Windows Guest Provisioning & ISO Path
-
-### Symptom
-- Installation finishes with: `PARTIAL SUCCESS: Windows guest provisioning skipped`.
-
-### Root Cause
-- `config.toml` has `guest.iso_path = ""`.
-- The core CAPEv2 services (CAPE, Web interface, MongoDB, rooter) are fully installed and active, but the Windows VM was not created because no Windows installer ISO was supplied.
-
-### Resolution
-1. Download a Windows 10 or 11 ISO.
-2. Edit `config.toml`:
-   ```toml
-   [guest]
-   enabled = true
-   iso_path = "/path/to/windows10.iso"
-   ```
-3. Resume to build the VM and take the clean snapshot:
+2. Check service status:
    ```bash
-   sudo ./install.sh --from-stage VM_CREATE
+   cape-status
    ```
-
----
-
-## 7. Tasks Stuck in 'Pending' State on Dashboard
-
-### Symptom
-- Submitted malware samples stay in `pending` indefinitely on the web interface; VM never powers on or reverts.
-
-### Root Cause
-- The web interface (`cape-web.service`) only creates the database entry.
-- VM lifecycle, snapshot reversion, and execution dispatch are controlled exclusively by `cape.service` (`cuckoo.py`) and `cape-processor.service` (`utils/process.py`). If either daemon is down or in a crash loop, tasks remain queued forever.
-
-### Automated Remediation & Manual Commands
-1. Run automated self-repair:
-   ```bash
-   sudo ./repair.sh
-   ```
-2. Or manually restart and verify the entire service stack:
-   ```bash
-   sudo systemctl restart cape-rooter cape cape-processor cape-web
-   sudo systemctl status cape-rooter cape cape-processor cape-web --lines=0
-   ```
-3. Watch the master scheduler pick up the pending tasks:
+3. Watch the master scheduler claim the pending task:
    ```bash
    sudo journalctl -u cape.service -f -n 30
    ```
+   You will see KVM revert `cape-win` to `cape-clean`, dispatch the sample to the guest agent, and transition the task on the dashboard to `running` &rarr; `completed`.
 
 ---
 
-## 8. Missing `libvirt-python` in CAPEv2 Virtual Environment
+## 3. In-Guest Package Execution Errors
 
-### Symptom
-- `cape.service` or `cape-processor.service` fails to start with:
-  `ModuleNotFoundError: No module named 'libvirt'` or `CuckooStartupError: check_snapshot_state()`.
+### Symptom A: `CuckooPackageError: Unable to find any EXCEL.EXE executable`
 
-### Root Cause
-- Ubuntu provides `python3-libvirt` in system Python (`/usr/lib/python3/dist-packages/`), but CAPEv2 executes inside an isolated Python virtual environment (`/opt/CAPEv2/.venv`). Without native `libvirt-python` compiled into the venv, CAPE cannot talk to KVM.
+#### Root Cause
+The in-guest package `modules/packages/xls.py` executes `self.get_path_glob("EXCEL.EXE")`. Because Microsoft Excel is not installed inside the Windows sandbox, the package cannot spawn the process.
 
-### Automated Remediation
-The installer (`install.sh`, `clean-install.sh`) and self-repair (`repair.sh`) automatically audit and install `pkg-config`, `libvirt-dev`, and `python3-libvirt`, compiling `libvirt-python`, `certvalidator`, `asn1crypto`, and `mscerts` directly into `/opt/CAPEv2/.venv`.
+#### Solution
+Install Microsoft Office inside the VM using the official Microsoft Office Deployment Tool (ODT) or staging an Office installer, and disable Macro / Protected View restrictions.  
+*(See the [Non-PE Analysis Guide](NON_PE_GUIDE.md) for automated configuration scripts).*
 
-### Manual Recovery
+---
+
+### Symptom B: `CuckooPackageError: Unable to find any WinRAR.exe executable`
+
+#### Root Cause
+CAPEv2's `rar.py` and `archive.py` packages explicitly verify the presence of `WinRAR.exe` at `C:\Program Files\WinRAR\WinRAR.exe`. Python's `rarfile` library also depends on `WinRAR.exe` or `unrar.exe`. Even if 7-Zip is installed, `.rar` files fail without WinRAR.
+
+#### Solution
+Inside the Windows guest Administrator PowerShell:
+```powershell
+choco install -y winrar
+```
+Then recapture the `cape-clean` snapshot.
+
+---
+
+## 4. Guest Provisioning & Console Traps
+
+### Symptom A: PowerShell freezes during script execution (The QuickEdit Trap)
+
+#### Root Cause
+Windows Console has **QuickEdit Mode** enabled by default. Clicking inside the blue console window pauses the PowerShell process to allow text selection.
+
+#### Solution
+Click inside the PowerShell window and press **`Esc`**, then **`Enter`**. Output will immediately resume scrolling.  
+To disable QuickEdit permanently: right-click title bar &rarr; **Properties** &rarr; uncheck **QuickEdit Mode** &rarr; **OK**.
+
+---
+
+### Symptom B: `PSSecurityException: UnauthorizedAccess` in guest
+
+#### Root Cause
+Windows PowerShell defaults to `Restricted` execution policy.
+
+#### Solution
+Execute with `-ExecutionPolicy Bypass`:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
+```
+
+---
+
+## 5. Host Virtualization & KVM Failures
+
+### Symptom: `/dev/kvm does not exist` or nested virtualization missing
+
+#### Root Cause
+- VT-x/AMD-V is disabled in physical host BIOS/UEFI.
+- Or running inside a virtual machine (VirtualBox, VMware) without nested virtualization enabled.
+- On Windows hosts running VirtualBox, Windows Hyper-V or VBS locks the CPU (indicated by a green turtle icon).
+
+#### Solution
+1. On Windows physical hosts: run [`enable-windows-virtualization.bat`](../enable-windows-virtualization.bat) as Administrator.
+2. In hypervisors: consult the [Nested Virtualization Guide](NESTED_VIRTUALIZATION.md).
+
+---
+
+## 6. Python Environment & Library Bindings
+
+### Symptom: `ModuleNotFoundError: No module named 'libvirt'`
+
+#### Root Cause
+Ubuntu places system packages in `/usr/lib/python3/dist-packages/`, but CAPEv2 runs inside an isolated virtual environment (`/opt/CAPEv2/.venv`). If `libvirt-python` is not compiled into the venv, CAPEv2 cannot issue commands to KVM.
+
+#### Solution
+Compile native bindings directly into the virtual environment:
 ```bash
 sudo apt-get install -y pkg-config libvirt-dev python3-libvirt
 sudo /opt/CAPEv2/.venv/bin/pip install libvirt-python certvalidator asn1crypto mscerts
 sudo systemctl restart cape-rooter cape cape-processor cape-web
 ```
+*(Both `./install.sh` and `./repair.sh` handle this automatically).*
 
+---
+
+## 7. Host Package & Lock Contention
+
+### Symptom: `Could not get lock /var/lib/dpkg/lock-frontend`
+
+#### Root Cause
+Ubuntu background processes (`unattended-upgrades`, `apt-daily`) hold the package manager lock.
+
+#### Automated Solution
+The installer waits up to 30 seconds for background locks to clear, or safely terminates stale processes and runs `dpkg --configure -a`.

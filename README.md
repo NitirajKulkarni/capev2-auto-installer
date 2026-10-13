@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🦅 CAPEv2 Universal Automated Installer & Malware Sandbox Orchestrator
+# 🦅 CAPEv2 Universal Automated Installer & Sandbox Orchestrator
 
 **A self-healing, zero-touch, automated installation and lifecycle engine for CAPEv2 Sandbox on Ubuntu hosts.**
 
@@ -8,6 +8,9 @@
 [![Ubuntu: 24.04 | 22.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2022.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Guest: Answer Disc Provisioning](https://img.shields.io/badge/Windows-Answer%20Disc%20Provisioning-0078D6?logo=windows&logoColor=white)](templates/windows/)
+[![CI: Automated Test Suite](https://img.shields.io/badge/CI-Passing%20(60%20Tests)-brightgreen.svg)](tests/)
+
+<br />
 
 **Author & Maintainer:** [**Nitiraj V. Kulkarni — AI Safety & Cybersecurity Researcher**](https://nitirajkulkarni.in/)  
 [![Website](https://img.shields.io/badge/Website-nitirajkulkarni.in-0078D6?style=flat&logo=googlechrome&logoColor=white)](https://nitirajkulkarni.in/)
@@ -17,7 +20,7 @@
 
 ---
 
-### ⚡ Zero to CAPEv2 in One Command
+### ⚡ One-Command Deployment
 
 ```bash
 git clone https://github.com/NitirajKulkarni/capev2-auto-installer.git
@@ -29,70 +32,69 @@ sudo ./install.sh
 
 ---
 
-## 📖 Overview
+## 📚 Documentation Portal
 
-Designed to accelerate dynamic malware analysis and threat intelligence, this **CAPEv2 Sandbox Auto-Installer** solves the notoriously fragile manual deployment process of setting up isolated environments. Developed out of advanced AI safety and cybersecurity research by Nitiraj Kulkarni, this orchestration engine provides a 100% zero-touch, self-healing framework for deploying a military-grade malware analysis sandbox on modern Ubuntu systems.
+To keep this guide concise, deep-dive operational documentation has been organized into dedicated guides:
 
-When deploying CAPEv2 manually, security researchers and SOC operators frequently run into:
-- ❌ Missing nested hardware virtualization flags (`/dev/kvm`).
-- ❌ Host package lock contention (`/var/lib/dpkg/lock`).
-- ❌ Python version mismatches (e.g., Python 3.14 wheel incompatibilities with `python-flirt`).
-- ❌ Manual, tedious Windows installation screens requiring VNC viewer interaction.
-- ❌ Brittle bash scripts that crash halfway through and force a complete manual restart.
+| Document | Description |
+| :--- | :--- |
+| ❓ [**FAQ & Knowledge Base**](docs/FAQ.md) | Answers to 22+ frequent questions, QuickEdit console traps, drive letters, pending tasks, and snapshot mechanics. |
+| 📦 [**Non-PE Analysis Guide**](docs/NON_PE_GUIDE.md) | Complete setup for Office (ODT), WinRAR, 7-Zip, SumatraPDF, Java, Scripts, and bulk Chocolatey installation. |
+| 🩺 [**Troubleshooting & Remediation**](docs/TROUBLESHOOTING.md) | Diagnosis and fixes for KVM locks, running snapshot states, qemu delvm commands, and microservice errors. |
+| 💻 [**Nested Virtualization Guide**](docs/NESTED_VIRTUALIZATION.md) | Running Ubuntu on VirtualBox, VMware, Hyper-V, Proxmox, and fixing Windows host VBS locks. |
+| 🏗️ [**Architecture & Pipeline**](docs/ARCHITECTURE.md) | Deep-dive into the 24-stage state machine, state persistence, and hermetic virtual environments. |
+| ⚙️ [**Configuration Reference**](docs/CONFIGURATION.md) | Full schema and customization parameters for `config.toml`. |
+| 📖 [**Operator Runbook**](docs/RUNBOOK.md) | Daily health checks, continuous monitoring, and service lifecycle management. |
 
-This repository eliminates all manual friction by wrapping CAPEv2 into a **deterministic 24-stage state machine** with **autonomous environment discovery**, **streaming ISO provisioning**, **unattended zero-touch Windows guest installation**, and **built-in self-healing**.
+---
+
+## 🌟 Key Highlights
+
+- 🚀 **100% Zero-Touch Automation**: Eliminates hundreds of fragile manual commands across KVM, libvirt, PostgreSQL/MongoDB, Python virtualenvs, and Windows guest setup.
+- 🪟 **Autonomous Windows Provisioning**: Streams genuine Microsoft Evaluation ISOs directly from Microsoft CDNs and builds unattended answer discs (`Autounattend.xml` + WinPE bypasses).
+- 🔄 **Deterministic 24-Stage State Machine**: Atomic stages tracked in `state/manifest.json`. Fully resumable after host reboots (`./install.sh --resume`).
+- 🛠️ **Autonomous Self-Healing Engine**: Integrated `./repair.sh` diagnoses and repairs broken snapshots, cleans stale PID locks, restores routing tables, and restarts daemons.
+- 📦 **Complete Non-PE Format Readiness**: Supports automated bulk deployment for Microsoft Office, WinRAR, 7-Zip, SumatraPDF, Java, AutoIt, and Node.js.
+- 🛡️ **Forensic Sandbox Integrity**: Enforces authentic Windows operating systems (strictly blocks stripped Tiny11 builds) to guarantee malware executes realistically.
 
 ---
 
 ## 🚀 Quick Start Guide
 
-### 1. Fresh Full Installation
+### 1. Standard Installation
 ```bash
-# Standard automated installation (Windows 10 Enterprise Eval by default):
+# Automated deployment with Windows 10 Enterprise Evaluation (Recommended):
 sudo ./install.sh
 
-# Unattended / non-interactive (ideal for CI/CD and cloud-init):
+# Unattended mode (ideal for CI/CD, cloud-init, and automated infrastructure):
 sudo ./install.sh --non-interactive
 ```
 
-### 2. Clean Reinstall (Full Wipe & Fresh Rebuild)
-Need to wipe an old or broken deployment and start completely fresh? Use the clean install command:
+### 2. Clean Reinstall (Full Wipe & Fresh Build)
+Wipes previous virtual machines, disks, networks, `/opt/CAPEv2`, and state, then rebuilds from scratch:
 ```bash
-# Wipes previous VMs, disks, networks, /opt/CAPEv2, and state, then installs fresh:
 sudo ./clean-install.sh
-
-# Or via install.sh flag:
-sudo ./install.sh --clean-install
 ```
 
-### 3. Automatic Windows Evaluation ISO Download
-No need to manually find, download, or transfer multi-gigabyte ISOs. The installer streams official Microsoft Evaluation ISOs directly from Microsoft's CDN with live speed and resume support:
+### 3. Automatic Evaluation ISO Streaming
+Automatically streams official Microsoft Enterprise Evaluation ISOs with live speed indicators and resume support:
 ```bash
-# Windows 10 Enterprise Evaluation (Recommended - gold standard for malware analysis & nested VMs):
+# Windows 10 Enterprise Evaluation (Gold standard for nested hypervisors):
 sudo ./install.sh --auto-download-iso
-
-# Or with clean reinstallation:
-sudo ./clean-install.sh --windows-edition win10_eval --auto-download-iso
 
 # Windows 11 Enterprise Evaluation:
 sudo ./clean-install.sh --windows-edition win11_eval --auto-download-iso
 ```
 
-> [!TIP]
-> **Running inside VirtualBox or VMware?**
-> We strongly recommend **`win10_eval`** (the default). Windows 10 Enterprise Evaluation boots in standard BIOS mode and uses ~3.5 GB RAM, avoiding VirtualBox nested SMM/TPM crashes and host memory exhaustion. The built-in **Resource Guard** automatically scales memory and vCPUs so your Ubuntu host retains plenty of RAM.
-
-### 4. Resume After Interruption or Reboot
-If host updates or kernel drivers require a system reboot, simply resume without losing progress:
+### 4. Resume Interrupted Deployment
+If a system reboot or network interruption occurs, resume instantly without losing progress:
 ```bash
 sudo ./install.sh --resume
 ```
 
 ---
 
-## 🪟 Windows Guest Provisioning & Mandatory Manual Agent Setup
-
-The installer provisions the virtual machine and automated answer disc, after which you execute the guest configuration script manually inside the Windows VM.
+## 🪟 Windows Sandbox Provisioning Flow
 
 ```
  ┌──────────────────────┐      ┌────────────────────────┐      ┌───────────────────────┐
@@ -108,125 +110,63 @@ The installer provisions the virtual machine and automated answer disc, after wh
  └──────────────────────┘      └────────────────────────┘      └───────────────────────┘
 ```
 
----
+### Phase 1: Automated Base OS Setup (Host Orchestrated)
+1. Streams genuine Windows Enterprise Evaluation ISO directly from Microsoft.
+2. Generates dynamic answer disc (`cape-win-unattend.iso`) mounted as secondary optical drive (Drive `E:` / `D:`).
+3. Bypasses TPM 2.0, Secure Boot, RAM/CPU requirements, and Microsoft account prompts (`OOBE\BYPASSNRO`).
+4. Windows automatically partitions disk, installs OS, and logs into desktop user `cape`.
 
-### 📋 Sequential Deployment Flow
+### Phase 2: Guest Configuration (`setup-agent.ps1`)
+Because Windows enforces User Account Control and execution policy restrictions, execute the configuration script once inside the Windows VM:
 
-The guest deployment process is split into three clean phases:
-
-#### Phase 1: Automated Base OS Setup (Host Orchestrated)
-1. **Evaluation ISO Streaming**: Automatically downloads genuine Microsoft Windows Enterprise Evaluation ISOs with live MB/s progress and chunked resume support.
-2. **Dynamic Answer Disc (OEMDRV)**: Generates `cape-unattend.iso` containing `Autounattend.xml` and `setup-agent.ps1`, attached as a secondary optical drive (drive `E:` or `D:`).
-3. **Hardware & OOBE Bypasses**: Injects WinPE bypasses for Windows 11 TPM 2.0, Secure Boot, RAM, CPU checks, and OOBE network requirement (`BypassNRO`).
-4. **Hardware Stability**: Configures virtual disks over native SATA AHCI and networking over Intel `e1000e`, eliminating third-party VirtIO driver dependencies during setup.
-5. **Base Installation**: Windows automatically partitions the disk, installs the OS, and boots to the desktop with autologon user `cape` (Password: `cape`).
-
----
-
-#### Phase 2: Mandatory Manual Guest Configuration (`setup-agent.ps1`)
-
-> [!IMPORTANT]
-> **The guest agent setup script does NOT run automatically.**  
-> Windows default security policies, User Account Control (UAC), and PowerShell execution restrictions (`Restricted`) prevent automatic first-logon background script runs.  
-> Once Windows finishes setup and displays the Desktop, you **must run `setup-agent.ps1` manually in Administrator PowerShell**.
-
-#### Step-by-Step Guest Execution Guide:
-
-1. **Access the Windows Console:**  
-   Open the VM display on your Ubuntu host:
-   ```bash
-   virt-viewer -c qemu:///system cape-win
-   ```
-   *(Or connect via any VNC client to the host's VNC port).*
-
-2. **Open PowerShell as Administrator:**  
-   Click the Windows Start menu &rarr; Type `powershell` &rarr; Right-click **Windows PowerShell** &rarr; Select **Run as Administrator**.
-
-3. **Execute the Setup Script with Execution Policy Bypass:**  
-   Navigate to the mounted virtual CD-ROM drive (usually `E:` or `D:`) and run:
-   ```powershell
-   # If your answer disc is on drive E:
-   E:
-   powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
-   ```
-   *Alternatively, run this universal 1-liner that auto-detects the drive regardless of drive letter:*
+1. Open VM console: `virt-viewer -c qemu:///system cape-win` (or connect via VNC).
+2. Open **Windows PowerShell as Administrator**.
+3. Run the universal 1-liner to configure network, disable Defender, and launch the agent:
    ```powershell
    Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
    ```
-
-   > [!WARNING]
-   > Do **NOT** run `.\setup-agent.ps1` directly without bypassing execution policy! Windows will block it with:  
-   > `File ... cannot be loaded because running scripts is disabled on this system (PSSecurityException: UnauthorizedAccess)`.
-
-4. **Restart the Windows VM (Mandatory to Trigger Detection & Snapshot):**  
-   Once the script finishes and outputs `[+] Guest configuration complete!`, restart the Windows VM:
+4. **Restart the VM** to flush network routes and auto-start the agent daemon on boot:
    ```powershell
    Restart-Computer
    ```
-   *(Or from your Ubuntu host terminal: `virsh reboot cape-win`)*.
 
-   > [!TIP]
-   > **Why restarting the VM makes the installer detect the agent:**
-   > - **Clean Network Binding:** Restarting cleanly applies the static IP (`192.168.250.100`), flushing any transient DHCP leases or half-open socket states.
-   > - **Automatic Startup Daemon:** The script registers `agent.pyw` into the Windows Startup folder (`%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup`). When Windows boots up and auto-logs into the `cape` user, it automatically launches the agent daemon in the background listening on port 8000.
-   > - **Instant Handshake:** Within ~10 to 15 seconds after rebooting, the Ubuntu orchestrator detects the `HTTP 200 OK` response on `http://192.168.250.100:8000/`, stops polling, and automatically captures the clean baseline snapshot (`cape-clean`)!
+### Phase 3: Automated Snapshot & Service Launch (Host Orchestrated)
+1. Ubuntu orchestrator polls `http://192.168.250.100:8000/` until `HTTP 200 OK` is received.
+2. Automatically captures the live running snapshot (`cape-clean`) with active RAM memory (`<state>running</state>`).
+3. Registers snapshot metadata in `/opt/CAPEv2/conf/kvm.conf`.
+4. Starts the 4-microservice stack (`cape-rooter`, `cape`, `cape-processor`, `cape-web`) in strict dependency order.
 
-#### What `setup-agent.ps1` Automates Inside the Guest:
-- 🌐 **Static Network Binding:** Configures static IP `192.168.250.100`, subnet mask `255.255.255.0`, gateway `192.168.250.1`, and DNS `1.1.1.1`.
-- 🛡️ **Forensic Hardening:** Disables Windows Defender (real-time monitoring, cloud protection, automatic sample submission), UAC, Windows Firewall across all profiles, and sleep/display timers.
-- 🐍 **Agent Deployment:** Deploys an isolated Python runtime and launches the official CAPEv2 HTTP Agent daemon on `http://192.168.250.100:8000/` registered in Windows Startup.
-- ✅ **Confirmation:** Prints `[+] Guest configuration complete! CAPE Agent is active on port 8000.`
+<details>
+<summary><b>💡 Click to view detailed guest setup tips & QuickEdit trap prevention</b></summary>
 
----
+- **Execution Policy**: Never run `.\setup-agent.ps1` without `-ExecutionPolicy Bypass`, or Windows blocks it with `PSSecurityException`.
+- **The QuickEdit Trap**: If PowerShell appears frozen on "Installing Python...", click inside the console and press **`Esc`** &rarr; **`Enter`**. Disable QuickEdit in PowerShell Properties to prevent text-selection pausing.
+- **Why Rebooting Works**: Rebooting registers `agent.pyw` into Windows Startup, binds static IP `192.168.250.100`, and triggers the host snapshot within 15 seconds.
+- **Detailed Guide**: Consult [docs/FAQ.md](docs/FAQ.md) for full screenshots and answers.
 
-#### Phase 3: Automated Snapshot & Deployment Finalization (Host Orchestrated)
-1. **Agent Handshake**: The Ubuntu orchestrator continuously polls `http://192.168.250.100:8000/` until it receives `HTTP 200 OK`.
-2. **Clean Snapshot Capture**: As soon as the agent responds, the orchestrator captures the live clean baseline snapshot (with memory in `running` state):
-   ```bash
-   virsh snapshot-create-as cape-win cape-clean "Clean Running Baseline with Memory"
-   ```
-   > [!IMPORTANT]
-   > **Do NOT use `--disk-only`**: CAPEv2 strictly requires snapshots taken of running VMs with live memory (`<state>running</state>`). If a snapshot is created with `--disk-only` (`<state>disk-snapshot</state>`), `cape.service` fails on startup with `CuckooStartupError: Snapshot is not in a 'running' state`.
-
-3. **Machinery Binding**: Automatically registers snapshot metadata into `/opt/CAPEv2/conf/kvm.conf`.
-4. **Stack Launch & Hermetic KVM Bindings**: Guarantees hermetic `libvirt-python` and cryptographic bindings in `/opt/CAPEv2/.venv`, creates desktop launcher shortcuts (`cape-start`, `cape-status`), and starts all four systemd microservices (`cape-rooter.service`, `cape.service`, `cape-processor.service`, `cape-web.service`) in strict dependency order with continuous health polling.
+</details>
 
 ---
 
-> [!CAUTION]
-> **Strict Policy: Strictly NO Tiny11 or Stripped Custom OS Images**  
-> Malware analysis strictly requires **authentic, full-fidelity Windows**.  
-> Stripped builds (such as Tiny11, Tiny10, GhostSpectre, or ReviOS) remove vital components:
-> - **Windows Defender & AMSI**: Malware checks for Defender presence; if missing, samples fail to execute or evade detection.
-> - **Event Tracing for Windows (ETW)**: Kernel trace providers disabled, blinding behavioral analyzers.
-> - **WMI Providers & Namespaces**: Evasion queries crash when WMI providers are stripped.
-> - **Task Scheduler & BITS**: Persistence routines fail to execute.
-> 
-> The installer actively blocks Tiny11 images to guarantee forensic fidelity.
-
----
-
-## 🛠️ CLI Command Cheat Sheet
+## 🛠️ Master CLI Reference Cheat Sheet
 
 | Command | Action | Description |
 | :--- | :--- | :--- |
-| `sudo ./install.sh` | **Install** | Runs discovery, dependencies, KVM, CAPE, and guest provisioning. |
-| `sudo ./clean-install.sh` | **Clean Install** | Wipes previous VMs, disks, networks, `/opt/CAPEv2`, and state, then reinstalls. |
-| `sudo ./install.sh --clean-install` | **Clean Install** | Same as `./clean-install.sh` (can combine with custom options). |
-| `sudo ./enable-nonpe.sh` | **Enable Non-PE** | Stages 7-Zip, SumatraPDF & script handlers onto drive `E:`, captures clean baseline snapshot. |
-| `sudo ./install.sh --resume` | **Resume** | Resumes seamlessly from the last recorded atomic checkpoint. |
-| `sudo ./diagnose.sh` | **Diagnose** | Audits 11 subsystems (KVM, libvirt, network, PostgreSQL/MongoDB, services). |
-| `sudo ./diagnose.sh --watch` | **Live Monitor** | Real-time continuous subsystem status dashboard. |
-| `sudo ./repair.sh` | **Self-Repair** | Automatically heals broken services, stale locks, and network interfaces. |
-| `sudo ./status.sh` | **Status** | Displays state of all 24 stages and active checkpoints. |
-| `sudo ./status.sh --drift` | **Drift Check** | Detects drift between configuration files and runtime system state. |
-| `sudo ./uninstall.sh --full-reset` | **Full Wipe** | Complete uninstall including virtual disks, networks, and databases. |
+| `sudo ./install.sh` | **Install** | Runs preflight, dependencies, KVM, CAPEv2, and guest provisioning. |
+| `sudo ./clean-install.sh` | **Clean Install** | Wipes existing VMs, networks, `/opt/CAPEv2`, and state, then reinstalls fresh. |
+| `sudo ./enable-nonpe.sh` | **Enable Non-PE** | Stages WinRAR, 7-Zip, SumatraPDF & script handlers, then snapshots VM. |
+| `sudo ./repair.sh` | **Self-Repair** | Automatically repairs running snapshots, stale PID locks, and microservices. |
+| `sudo ./diagnose.sh` | **Diagnose** | Audits 11 subsystems (KVM, libvirt, routing, databases, and daemons). |
+| `sudo ./diagnose.sh --watch` | **Live Monitor** | Continuous real-time subsystem diagnostic dashboard. |
+| `sudo ./status.sh` | **Status** | Displays progress across all 24 stages and active checkpoints. |
+| `sudo ./status.sh --drift` | **Drift Check** | Detects configuration drift between files and runtime system state. |
+| `sudo ./uninstall.sh --full-reset`| **Full Wipe** | Safely tears down VMs, virtual disks, bridges, and databases. |
 
 ---
 
 ## 🔄 The 24-Stage State Machine Pipeline
 
-Every stage is atomic, logged, and tracked in `state/manifest.json`:
+Every stage is atomic, deterministic, and persisted in `state/manifest.json`:
 
 ```
  [1] PREFLIGHT          Audit host hardware, virtualization flags, RAM & CPU
@@ -247,7 +187,7 @@ Every stage is atomic, logged, and tracked in `state/manifest.json`:
 [16] VM_INSTALL         Unattended zero-touch Windows setup via OEMDRV answer disc
 [17] VM_CONFIG          Harden guest baseline (disable Defender, UAC, firewall, sleep)
 [18] AGENT              Bootstrap and verify CAPE HTTP agent daemon on port 8000
-[19] SNAPSHOT           Capture clean analysis snapshot (cape-clean)
+[19] SNAPSHOT           Capture clean analysis snapshot (cape-clean) in running state
 [20] MACHINERY_CONFIG   Bind guest snapshot metadata into CAPE kvm.conf
 [21] CAPE_START         Start all CAPE systemd services in proper dependency order
 [22] HEALTH_CHECK       Perform active HTTP, socket, database, and sniffer verification
@@ -263,282 +203,18 @@ Running your Ubuntu CAPEv2 host inside VirtualBox, VMware, Hyper-V, or Proxmox? 
 
 | Hypervisor | Configuration Steps |
 | :--- | :--- |
-| **VMware Workstation / Player** | Power off VM &rarr; *Virtual Machine Settings* &rarr; *Processors* &rarr; Check **"Virtualize Intel VT-x/EPT or AMD-V/RVI"**. |
-| **Oracle VirtualBox** | Power off VM &rarr; *Settings* &rarr; *System* &rarr; *Processor* &rarr; Check **"Enable Nested VT-x/AMD-V"**. |
-| **Proxmox VE** | Select VM &rarr; *Hardware* &rarr; *Processors* &rarr; Set CPU Type to **`host`**. |
-| **Microsoft Hyper-V** | In Administrator PowerShell on Windows: <br>`Set-VMProcessor -VMName "<Your-Ubuntu-VM>" -ExposeVirtualizationExtensions $true` |
+| **Oracle VirtualBox** | VM Settings &rarr; *System* &rarr; *Processor* &rarr; Check **"Enable Nested VT-x/AMD-V"**. |
+| **VMware Workstation** | VM Settings &rarr; *Processors* &rarr; Check **"Virtualize Intel VT-x/EPT or AMD-V/RVI"**. |
+| **Proxmox VE** | VM Hardware &rarr; *Processor* &rarr; Set CPU Type to **`host`**. |
+| **Microsoft Hyper-V** | In PowerShell: `Set-VMProcessor -VMName "<VM>" -ExposeVirtualizationExtensions $true` |
 
 > [!TIP]
-> **Windows 10/11 Host Automated Fix (VirtualBox / VMware):**  
-> If VirtualBox on Windows shows an icon of a green turtle (Snail Execution Mode) and `/dev/kvm` is missing inside Ubuntu, Windows Hyper-V or Virtualization-Based Security (VBS) is locking the CPU.  
-> **1-Click Fix:** Run [`enable-windows-virtualization.bat`](enable-windows-virtualization.bat) on Windows as Administrator, choose option `[1]`, and reboot.
+> **Windows Host 1-Click Fix (VirtualBox "Green Turtle" / VBS Lock):**  
+> If VirtualBox shows a green turtle icon and `/dev/kvm` is missing inside Ubuntu, Windows Hyper-V/VBS is locking hardware virtualization.  
+> Run [`enable-windows-virtualization.bat`](enable-windows-virtualization.bat) as Administrator on Windows, select option `[1]`, and reboot.  
+> *(See [docs/NESTED_VIRTUALIZATION.md](docs/NESTED_VIRTUALIZATION.md) for complete details).*
 
 ---
-
-## ❓ Detailed FAQ & Troubleshooting Guide
-
-### Q1: Why does running `.\setup-agent.ps1` fail with `PSSecurityException: UnauthorizedAccess`?
-**Cause:** Windows PowerShell defaults to `Restricted` execution policy, which blocks running any external scripts (`.ps1`).  
-**Fix:** You must execute the script with `-ExecutionPolicy Bypass`. In PowerShell (Admin):
-```powershell
-powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
-```
-*Or set the execution policy for your current PowerShell session first:*
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-.\setup-agent.ps1
-```
-
----
-
-### Q2: Which drive letter is the setup script on? (`D:`, `E:`, or `F:`)?
-**Explanation:** Windows assigns drive letters to CD-ROM drives dynamically depending on partitions.  
-- If Windows only has a `C:` drive, the answer disc is usually `D:`.
-- If Windows has a recovery partition or second disk, the answer disc is often `E:`.  
-**How to check:** In PowerShell, run:
-```powershell
-Get-PSDrive -PSProvider FileSystem
-```
-Look for the drive labeled `OEMDRV` or `cuckoo`. You can switch to that drive (e.g. `E:`) and run `dir` to see `setup-agent.ps1`.  
-**Universal 1-Liner:** If you don't want to check drive letters, use this command—it scans all drives automatically:
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force; $s = (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'setup-agent.ps1' } | Where-Object { Test-Path $_ } | Select-Object -First 1); if ($s) { & $s }
-```
-
----
-
-### Q3: Why does PowerShell freeze or stop progressing during script execution? (The QuickEdit Trap)
-**Cause:** The Windows console has **QuickEdit Mode** enabled by default. If you click anywhere inside the blue PowerShell console window, Windows enters text-selection mode and **pauses the entire execution thread**!  
-**Fix:**
-1. If the script appears stuck (e.g., waiting on "Installing Python..." for over 2 minutes), click the window and press **`Esc`** followed by **`Enter`**. Output will immediately resume scrolling.
-2. To permanently disable QuickEdit: Right-click the PowerShell title bar &rarr; *Properties* &rarr; *Options* tab &rarr; Uncheck **QuickEdit Mode** &rarr; Click *OK*.
-
----
-
-### Q4: Why does the PowerShell script say "Access is denied" when setting the IP address?
-**Cause:** You launched PowerShell as a standard user instead of Administrator. Network configuration and Defender remediation require administrative privileges.  
-**Fix:** Close the window, open the Start menu, type `powershell`, right-click **Windows PowerShell**, and click **Run as Administrator**.
-
----
-
-### Q5: The script finished in Windows, but Ubuntu still waits at "Awaiting guest agent on 192.168.250.100:8000...". What should I do?
-**Fix: Simply restart the Windows VM!**  
-In the Windows guest PowerShell, run:
-```powershell
-Restart-Computer
-```
-Or from your Ubuntu host terminal:
-```bash
-virsh reboot cape-win
-```
-
-**Why restarting makes it detect immediately:**
-1. **Flushes Network Stack:** On Windows, assigning the static IP `192.168.250.100` during an active session can leave adapter routes unrefreshed on the host bridge. A reboot cleanly binds the static IP and routing table with `virbr-cape`.
-2. **Auto-starts Agent Daemon:** `setup-agent.ps1` places `agent.pyw` into the Windows Startup folder (`%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup`). When the VM reboots and autologon logs into user `cape`, Windows automatically launches the agent daemon in the user session.
-3. **Instant Snapshot Trigger:** As soon as Windows boots back up (~10–15 seconds), the Ubuntu orchestrator receives `HTTP/1.0 200 OK`, immediately captures the `cape-clean` baseline snapshot, and launches the CAPEv2 systemd microservices!
-
-**How to verify from the Ubuntu host:**
-In a separate terminal on your Ubuntu host, test connectivity:
-```bash
-curl -I http://192.168.250.100:8000/
-```
-- If it returns `HTTP/1.0 200 OK`, the agent is alive and the installer will immediately detect it and capture the snapshot.
-- If it returns `Connection refused` or times out, restarting the VM via `virsh reboot cape-win` will launch the agent on boot.
-
----
-
-### Q6: How do I open the Windows guest graphical desktop from Ubuntu?
-If you are running on a local desktop or via SSH with X11 forwarding:
-```bash
-virt-viewer -c qemu:///system cape-win
-```
-If you are on a headless server without GUI, use VNC:
-```bash
-virsh vncdisplay cape-win
-```
-*(e.g., `:0` corresponds to port `5900`, `:1` to `5901`). Connect using any VNC viewer (Remmina, TigerVNC, RealVNC).*
-
----
-
-### Q7: Can I re-run `setup-agent.ps1` if something went wrong or the VM rebooted?
-**Yes.** `setup-agent.ps1` is completely idempotent. You can re-run it multiple times without issues. It will verify the static IP, re-check Defender disablement, and restart the agent on port 8000.
-
----
-
-### Q8: What if the installer or host does not detect the agent after running `setup-agent.ps1`?
-**Quick Solution: Restart the Windows VM**  
-The provisioning script copies the official CAPE agent directly into the Windows Startup directory (`%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup\agent.pyw`). If the agent process didn't start or networking needs to re-initialize:
-1. Restart the Windows VM from the Ubuntu host:
-   ```bash
-   virsh reboot cape-win
-   # Or hard reset if unresponsive:
-   virsh reset cape-win
-   ```
-2. Once Windows boots to the desktop, the agent starts automatically via the Startup folder.
-3. Test connectivity from the Ubuntu host:
-   ```bash
-   curl -I http://192.168.250.100:8000/
-   ```
-4. If checking inside Windows guest PowerShell:
-   ```powershell
-   Test-NetConnection -Port 8000 -ComputerName 127.0.0.1
-   # Or check listening sockets:
-   netstat -ano | findstr 8000
-   ```
-   When `TcpTestSucceeded : True` or `curl` returns `HTTP 200 OK`, the installer will automatically detect the VM and proceed with snapshot creation.
-
----
-
-### Q9: What if Windows setup prompts for a Microsoft Account or internet during installation?
-If Windows setup pauses at "Let's connect you to a network":
-1. Press `Shift + F10` to open a command prompt.
-2. Type `OOBE\BYPASSNRO` and press Enter. The VM will reboot.
-3. Upon reboot, click **"I don't have internet"**, then select **"Continue with limited setup"**.
-4. Set the username to `cape` and password to `cape`.
-
----
-
-### Q10: A malware analysis task has been running for 5 minutes, is it stuck?
-No! CAPEv2 takes an average of 3 to 6 minutes to fully execute a malware payload in the sandbox, record all API calls, generate PCAP files, extract payloads, and generate the final report. This is completely normal operational behavior.
-
----
-
-### Q11: Why is my submitted task stuck on 'Pending' on the web dashboard while the VM does nothing?
-**Root Cause:**  
-The CAPEv2 Web UI (`cape-web.service`) only creates the task record in the database. It does not interact with KVM.  
-The actual task execution and VM lifecycle is managed by **`cape.service`** (the master sandbox scheduler running `cuckoo.py`), and result extraction is handled by **`cape-processor.service`** (`utils/process.py`). If either daemon is stopped or inactive, tasks remain in `pending` forever and the VM will never be started or reverted!
-
-**Instant Fix:**  
-Ensure all four CAPEv2 microservices are active:
-```bash
-# 1. Enable and start all microservices:
-sudo systemctl enable --now cape-rooter cape cape-processor cape-web
-
-# 2. Or let the autonomous repair engine fix and start them:
-sudo ./repair.sh
-
-# 3. Or use the master CLI launcher:
-cape-start
-```
-
-**Verify Service Health:**
-```bash
-cape-status
-# Or via systemctl:
-sudo systemctl status cape-rooter cape cape-processor cape-web --lines=0
-```
-All four services must report `active (running)`.
-
-**Watch Live Task Scheduling:**  
-Once `cape.service` is active, watch the logs as it immediately claims the pending task:
-```bash
-sudo journalctl -u cape.service -f -n 30
-# Or via logfile:
-tail -f /opt/CAPEv2/log/cuckoo.log
-```
-You will immediately observe KVM reverting `cape-win` to `cape-clean`, launching the VM, executing the sample, and advancing the task on the dashboard from **`pending` &rarr; `running` &rarr; `completed`**!
-
----
-
-### Q12: What if `cape-processor` or `cape` fails with `ModuleNotFoundError: No module named 'libvirt'`?
-**Root Cause:**  
-Ubuntu installs system Python packages to `/usr/lib/python3/dist-packages/`, but CAPEv2 runs inside an isolated, hermetic virtual environment (`/opt/CAPEv2/.venv`). If `libvirt-python` is missing from the virtualenv, neither `cuckoo.py` nor `utils/process.py` can communicate with KVM, leaving virtual machines in `shut off` state.
-
-**Automated Protection:**  
-Both the main installer pipeline (`./install.sh`, `./clean-install.sh`) and self-repair (`./repair.sh`) automatically audit and compile `libvirt-python`, `certvalidator`, `asn1crypto`, and `mscerts` directly into `/opt/CAPEv2/.venv`.
-
-**Quick Manual Fix:**  
-```bash
-# 1. Install build dependencies and system libraries:
-sudo apt-get install -y pkg-config libvirt-dev python3-libvirt
-
-# 2. Inject bindings into the CAPEv2 virtualenv:
-sudo /opt/CAPEv2/.venv/bin/pip install libvirt-python certvalidator asn1crypto mscerts
-
-# 3. Restart all services:
-sudo systemctl restart cape-rooter cape cape-processor cape-web
-```
-
----
-
-### Q13: How do I enable and run Non-PE files (PowerShell, Batch, VBS, JS, PDF, Office, Archives)?
-**Automated 1-Command Solution:**  
-```bash
-sudo ./enable-nonpe.sh
-# (or: sudo ./enabled-nonpe.sh)
-```
-
-**What this automatically does:**
-1. **Host-Side Parsers:** Compiles `batch_deobfuscator`, `httpreplay`, `oletools`, `xlmmacrodeobfuscator`, `pdfminer.six`, `certvalidator`, and archive extractors into `/opt/CAPEv2/.venv`.
-2. **Drive E: (OEMDRV Media Staging):** Downloads and stages silent installers for **7-Zip** (archives: `.zip`, `.rar`, `.7z`) and **SumatraPDF** (documents: `.pdf`), alongside `enable-nonpe.ps1` and `agent.pyw` into `/var/lib/libvirt/images/cape-win-unattend.iso` mounted on **Drive E:**.
-3. **Guest Configuration:** Inside the Windows VM (`cape-win`), open Administrator PowerShell and run:
-   ```powershell
-   powershell -ep bypass -f E:\enable-nonpe.ps1
-   ```
-   *This silently installs 7-Zip, SumatraPDF, sets PowerShell ExecutionPolicy to `Bypass`, enables Windows Script Host (`.vbs`, `.js`, `.wsf`), disables Defender, and launches the CAPE agent.*
-4. **Snapshot Capture:** The script automatically polls `http://192.168.250.100:8000/`, captures the new clean baseline snapshot (`cape-clean`) in `running` state with live RAM, registers it in `kvm.conf`, and restarts all CAPEv2 services!
-
----
-
-### Q14: What if tasks are stuck in `pending` or `cape.service` fails with `CuckooStartupError: Snapshot 'cape-clean' is not in a 'running' state (current state: 'disk-snapshot')`?
-**Root Cause:**  
-CAPEv2 strictly requires analysis VM snapshots to be in a live `running` state with RAM memory (`<state>running</state>`). If a snapshot was created with `--disk-only` or while the VM was shut off, libvirt flags the snapshot as `<state>disk-snapshot</state>`. CAPEv2 startup checks this and halts with `CuckooStartupError`, which causes `cape.service` to exit and leaves tasks stuck in `pending`.
-
-**Autonomous Solution:**  
-Simply run the self-repair tool:
-```bash
-sudo ./repair.sh
-```
-`repair.sh` automatically:
-1. Detects `disk-snapshot` or non-running snapshot states.
-2. Boots `cape-win` and waits for the guest agent on port 8000.
-3. Removes the invalid snapshot metadata.
-4. Captures a live snapshot with RAM memory in the verified `running` state.
-5. Clears any stale PID locks (`cuckoo.pid`) and restarts all 4 microservices cleanly so tasks are immediately dispatched to the VM!
-
----
-
-## ⚙️ Configuration File (`config.toml`)
-
-Customize your deployment in [`config.toml`](config.toml). Sane, secure defaults are provided:
-
-```toml
-[installation]
-cape_root = "/opt/CAPEv2"
-cape_user = "cape"
-non_interactive = false
-auto_repair = true
-max_repair_attempts = 3
-
-[network]
-mode = "isolated"
-subnet = "192.168.250.0/24"
-gateway = "192.168.250.1"
-vm_ip_start = "192.168.250.100"
-libvirt_network_name = "cape-analysis"
-web_port = 8000
-
-[guest]
-enabled = true
-name = "cape-win"
-windows_edition = "win10_eval"     # "win10_eval" or "win11_eval"
-auto_download_iso = true          # Automatically downloads official Microsoft ISO
-disk_bus = "sata"                 # Out-of-the-box Windows driver compatibility
-network_model = "e1000e"          # Out-of-the-box Intel network compatibility
-disk_size_gb = 80
-memory_mb = 8192
-vcpus = 4
-snapshot_name = "cape-clean"
-install_timeout_minutes = 35
-
-[guest.agent]
-enabled = true
-port = 8000
-```
-
----
-
-
 
 ## 📁 Repository Structure
 
@@ -549,12 +225,20 @@ capev2-auto-installer/
 ├── diagnose.sh                 # 🩺 11-Subsystem diagnostic tool
 ├── repair.sh                   # 🛠️ Autonomous self-repair engine
 ├── status.sh                   # 📊 Stage progression & drift checker
+├── enable-nonpe.sh             # 📦 Non-PE environment builder & snapshotter
 ├── uninstall.sh                # 🗑️ Safe resource uninstaller
 ├── config.toml                 # ⚙️ Master configuration file
 ├── enable-windows-virtualization.bat # 🪟 Windows VBS / Hyper-V fix script
-├── docs/                       # 📚 Architecture, configuration & runbooks
+├── docs/                       # 📚 Dedicated modular documentation portal
+│   ├── FAQ.md                  # ❓ 22+ Detailed questions & answers
+│   ├── NON_PE_GUIDE.md         # 📦 Office, RAR, 7-Zip & script analysis guide
+│   ├── TROUBLESHOOTING.md      # 🩺 Diagnosis & remediation runbook
+│   ├── NESTED_VIRTUALIZATION.md# 💻 Hypervisor compatibility guide
+│   ├── ARCHITECTURE.md         # 🏗️ State machine architecture
+│   ├── CONFIGURATION.md        # ⚙️ Configuration options reference
+│   └── RUNBOOK.md              # 📖 Operational management procedures
 ├── src/cape_auto/              # 🐍 Core Python orchestration engine
-├── templates/                  # 📄 Systemd, network, and unattended XML templates
+└── templates/                  # 📄 Systemd, network, and unattended XML templates
 ```
 
 ---
