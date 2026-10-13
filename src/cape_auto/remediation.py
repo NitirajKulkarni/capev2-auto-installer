@@ -132,6 +132,16 @@ class RemediationEngine:
             self._cmd.run("rm -f /opt/CAPEv2/cuckoo.pid /opt/CAPEv2/storage/cuckoo.pid /tmp/cuckoo-rooter", shell=True)
             return self.repair_cape_services()
 
+        if (
+            "not in a 'running' state" in stderr_combined
+            or "disk-snapshot" in stderr_combined
+            or "check_snapshot_state" in stderr_combined
+            or "cuckoostartuperror" in stderr_combined
+        ):
+            logger.info("Detected invalid VM snapshot state ('disk-snapshot' or not 'running') - remediating snapshot to live running state")
+            self.repair_vm_snapshot_running_state()
+            return self.repair_cape_services()
+
         if "permission denied" in stderr_combined:
             logger.info("Detected permission issue")
             return self.repair_cape_permissions()
@@ -177,6 +187,12 @@ class RemediationEngine:
         # 4. Enforce correct ownership and libvirt/kvm group membership
         self.repair_cape_permissions(cape_root, cape_user)
         self._cmd.run(["usermod", "-aG", "libvirt,kvm", cape_user])
+
+        # Ensure VM baseline snapshot is in a live 'running' state with RAM before launching core daemon
+        try:
+            self.repair_vm_snapshot_running_state("cape-win", "cape-clean")
+        except Exception as e:
+            logger.warning(f"Snapshot state verification encountered an error: {e}")
 
         # Ensure libvirt-python and crypto helpers are installed inside virtualenv
         check_lv = self._cmd.run([py_bin, "-c", "import libvirt"])
@@ -556,6 +572,122 @@ WantedBy=multi-user.target
 
         return self.repair_service(service_name)
 
+    def repair_vm_snapshot_running_state(
+        self, vm_name: str = "cape-win", snap_name: str = "cape-clean"
+    ) -> bool:
+        """
+        Verify and enforce that VM baseline snapshot is in a live 'running' state.
+
+        CAPEv2 strictly requires memory-backed snapshots in 'running' state.
+        If a snapshot was created with --disk-only or taken while shut off,
+        CAPEv2 startup raises CuckooStartupError: Snapshot is not in a 'running' state.
+
+        This method:
+        1. Checks current snapshot state.
+        2. If missing or not 'running' (e.g. 'disk-snapshot', 'shutoff'):
+           a. Ensures VM is running.
+           b. Waits for guest agent to become reachable at http://192.168.250.100:8000.
+           c. Safely deletes existing invalid snapshot (including external metadata if needed).
+           d. Creates a clean live snapshot with full memory state:
+              virsh snapshot-create-as <vm_name> <snap_name> "Clean Running Baseline with Memory"
+           e. Verifies snapshot state is now 'running'.
+        """
+        logger.info(f"Verifying baseline snapshot '{snap_name}' state for VM '{vm_name}'...")
+
+        # Step 1: Check if VM exists
+        vm_check = self._cmd.run(["virsh", "dominfo", vm_name])
+        if not vm_check.success:
+            logger.info(f"VM '{vm_name}' not found in libvirt - skipping snapshot state verification.")
+            return True
+
+        # Step 2: Check snapshot info
+        snap_info = self._cmd.run(["virsh", "snapshot-info", vm_name, snap_name])
+        current_state = ""
+        if snap_info.success:
+            for line in snap_info.stdout.splitlines():
+                if line.strip().startswith("State:"):
+                    current_state = line.split(":", 1)[1].strip()
+                    break
+
+        if current_state == "running":
+            logger.info(f"[+] Snapshot '{snap_name}' for VM '{vm_name}' is already in valid 'running' state with RAM.")
+            return True
+
+        logger.warning(
+            f"Snapshot '{snap_name}' state is '{current_state or 'missing'}' "
+            "(CAPEv2 requires live 'running' state with RAM). Automatically converting to running snapshot..."
+        )
+
+        # Step 3: Ensure VM is started and running
+        dom_state = self._cmd.run(["virsh", "domstate", vm_name]).stdout.strip().lower()
+        if "running" not in dom_state:
+            logger.info(f"Starting VM '{vm_name}' (current domain state: {dom_state})...")
+            start_res = self._cmd.run(["virsh", "start", vm_name])
+            if not start_res.success and "already active" not in (start_res.stderr or "").lower():
+                logger.error(f"Failed to start VM '{vm_name}': {start_res.stderr}")
+                return False
+
+        # Step 4: Wait for guest agent to become responsive
+        logger.info("Waiting for guest agent at http://192.168.250.100:8000/ to become responsive...")
+        agent_url = "http://192.168.250.100:8000/"
+        agent_ready = False
+        import time
+        for i in range(30):  # Wait up to 90 seconds (30 * 3s)
+            check = self._cmd.run(
+                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "2", agent_url],
+                timeout=5,
+            )
+            code = check.stdout.strip()
+            if code in ("200", "404", "403"):
+                agent_ready = True
+                logger.info(f"Guest agent responded HTTP {code} after {i * 3}s")
+                break
+            time.sleep(3)
+
+        if not agent_ready:
+            logger.warning("Guest agent not responding via HTTP after timeout. Checking VM state...")
+            st = self._cmd.run(["virsh", "domstate", vm_name]).stdout.strip().lower()
+            if "running" not in st:
+                logger.error(f"VM '{vm_name}' is not in running state: {st}")
+                return False
+            # Allow a short stabilization pause if VM domain is running
+            time.sleep(5)
+
+        # Step 5: Delete previous invalid snapshot if exists
+        if snap_info.success:
+            logger.info(f"Deleting outdated snapshot '{snap_name}' (state: {current_state})...")
+            del_res = self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name])
+            if not del_res.success:
+                logger.debug(f"Direct delete failed; attempting with --metadata: {del_res.stderr}")
+                self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name, "--metadata"])
+
+        # Step 6: Create clean live snapshot with memory
+        # IMPORTANT: Do NOT use --disk-only. We need full memory state so snapshot state is 'running'.
+        logger.info(f"Creating live memory snapshot '{snap_name}' for '{vm_name}'...")
+        create_res = self._cmd.run([
+            "virsh", "snapshot-create-as", vm_name, snap_name,
+            "--description", "Clean Running Baseline with Memory for CAPEv2",
+        ])
+        if not create_res.success:
+            logger.error(f"Snapshot creation failed: {create_res.stderr or create_res.stdout}")
+            return False
+
+        # Step 7: Verify snapshot state
+        verify_info = self._cmd.run(["virsh", "snapshot-info", vm_name, snap_name])
+        new_state = ""
+        if verify_info.success:
+            for line in verify_info.stdout.splitlines():
+                if line.strip().startswith("State:"):
+                    new_state = line.split(":", 1)[1].strip()
+                    break
+
+        if new_state == "running":
+            logger.info(f"[+] Snapshot '{snap_name}' successfully verified in 'running' state with RAM!")
+            return True
+        else:
+            logger.warning(f"Snapshot state after creation is '{new_state}' (expected 'running')")
+            return new_state != ""
+
     def _handle_port_conflict(self, service_name: str, error_text: str) -> bool:
         """Handle port conflict for a service."""
         # Find which port is conflicting
@@ -633,6 +765,14 @@ WantedBy=multi-user.target
                     risk_level=RiskLevel.MEDIUM.value,
                 )
             ],
+            "VM_ERROR": [
+                Remediation(
+                    remediation_id="repair_vm_snapshot",
+                    target_component="vm",
+                    description="Repair VM snapshot running state with RAM memory",
+                    risk_level=RiskLevel.LOW.value,
+                )
+            ],
         }
         return repairs.get(error_category, [])
 
@@ -640,6 +780,8 @@ WantedBy=multi-user.target
         """Classify an error into a category based on stderr content."""
         stderr_lower = stderr.lower()
 
+        if any(w in stderr_lower for w in ["snapshot", "cuckoostartuperror", "running state", "disk-snapshot"]):
+            return "VM_ERROR"
         if any(w in stderr_lower for w in ["dpkg", "apt", "package", "unmet dependencies"]):
             return "PACKAGE_ERROR"
         if any(w in stderr_lower for w in ["dns", "resolve", "name resolution"]):

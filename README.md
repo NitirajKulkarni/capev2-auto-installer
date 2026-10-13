@@ -181,10 +181,13 @@ The guest deployment process is split into three clean phases:
 
 #### Phase 3: Automated Snapshot & Deployment Finalization (Host Orchestrated)
 1. **Agent Handshake**: The Ubuntu orchestrator continuously polls `http://192.168.250.100:8000/` until it receives `HTTP 200 OK`.
-2. **Clean Snapshot Capture**: As soon as the agent responds, the orchestrator pauses the VM and captures the clean baseline snapshot:
+2. **Clean Snapshot Capture**: As soon as the agent responds, the orchestrator captures the live clean baseline snapshot (with memory in `running` state):
    ```bash
-   virsh snapshot-create-as cape-win cape-clean --disk-only --atomic
+   virsh snapshot-create-as cape-win cape-clean "Clean Running Baseline with Memory"
    ```
+   > [!IMPORTANT]
+   > **Do NOT use `--disk-only`**: CAPEv2 strictly requires snapshots taken of running VMs with live memory (`<state>running</state>`). If a snapshot is created with `--disk-only` (`<state>disk-snapshot</state>`), `cape.service` fails on startup with `CuckooStartupError: Snapshot is not in a 'running' state`.
+
 3. **Machinery Binding**: Automatically registers snapshot metadata into `/opt/CAPEv2/conf/kvm.conf`.
 4. **Stack Launch & Hermetic KVM Bindings**: Guarantees hermetic `libvirt-python` and cryptographic bindings in `/opt/CAPEv2/.venv`, creates desktop launcher shortcuts (`cape-start`, `cape-status`), and starts all four systemd microservices (`cape-rooter.service`, `cape.service`, `cape-processor.service`, `cape-web.service`) in strict dependency order with continuous health polling.
 
@@ -473,7 +476,25 @@ sudo ./enable-nonpe.sh
    powershell -ep bypass -f E:\enable-nonpe.ps1
    ```
    *This silently installs 7-Zip, SumatraPDF, sets PowerShell ExecutionPolicy to `Bypass`, enables Windows Script Host (`.vbs`, `.js`, `.wsf`), disables Defender, and launches the CAPE agent.*
-4. **Snapshot Capture:** The script automatically polls `http://192.168.250.100:8000/`, captures the new clean baseline snapshot (`cape-clean`), registers it in `kvm.conf`, and restarts all CAPEv2 services!
+4. **Snapshot Capture:** The script automatically polls `http://192.168.250.100:8000/`, captures the new clean baseline snapshot (`cape-clean`) in `running` state with live RAM, registers it in `kvm.conf`, and restarts all CAPEv2 services!
+
+---
+
+### Q14: What if tasks are stuck in `pending` or `cape.service` fails with `CuckooStartupError: Snapshot 'cape-clean' is not in a 'running' state (current state: 'disk-snapshot')`?
+**Root Cause:**  
+CAPEv2 strictly requires analysis VM snapshots to be in a live `running` state with RAM memory (`<state>running</state>`). If a snapshot was created with `--disk-only` or while the VM was shut off, libvirt flags the snapshot as `<state>disk-snapshot</state>`. CAPEv2 startup checks this and halts with `CuckooStartupError`, which causes `cape.service` to exit and leaves tasks stuck in `pending`.
+
+**Autonomous Solution:**  
+Simply run the self-repair tool:
+```bash
+sudo ./repair.sh
+```
+`repair.sh` automatically:
+1. Detects `disk-snapshot` or non-running snapshot states.
+2. Boots `cape-win` and waits for the guest agent on port 8000.
+3. Removes the invalid snapshot metadata.
+4. Captures a live snapshot with RAM memory in the verified `running` state.
+5. Clears any stale PID locks (`cuckoo.pid`) and restarts all 4 microservices cleanly so tasks are immediately dispatched to the VM!
 
 ---
 

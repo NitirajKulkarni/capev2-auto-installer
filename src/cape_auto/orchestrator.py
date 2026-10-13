@@ -2982,6 +2982,10 @@ StartupNotify=true
         repair_map = {
             "PACKAGE_ERROR": self._remediation.repair_package_manager,
             "LIBVIRT_ERROR": self._remediation.repair_libvirt,
+            "VM_ERROR": lambda: self._remediation.repair_vm_snapshot_running_state(
+                self._config.get_str("guest.name", "cape-win"),
+                self._config.get_str("guest.snapshot_name", "cape-clean"),
+            ),
             "PYTHON_ERROR": lambda: self._remediation.repair_python_env(
                 self._config.get_str("installation.cape_root", "/opt/CAPEv2")
             ),
@@ -3016,7 +3020,7 @@ StartupNotify=true
             "python": "PYTHON_ERROR",
             "database": "DATABASE_ERROR",
             "cape_services": "SERVICE_ERROR",
-            "vm": "LIBVIRT_ERROR",
+            "vm": "VM_ERROR",
         }
         return mapping.get(component, "UNKNOWN_ERROR")
 
@@ -3228,26 +3232,27 @@ StartupNotify=true
         time.sleep(3)
 
         # ─── STEP 5: Capture Clean Baseline Snapshot & Save ───────────────────
-        logger.info(f"[5/5] Capturing and saving clean baseline snapshot '{snap_name}' for '{vm_name}'...")
-        # Remove old snapshot if present
+        logger.info(f"[5/5] Capturing and saving clean baseline snapshot '{snap_name}' for '{vm_name}' (with RAM)...")
+        # Remove old snapshot if present (including metadata if external)
         self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name], quiet=True)
+        self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name, "--metadata"], quiet=True)
 
+        # IMPORTANT: Do NOT use --disk-only. CAPEv2 strictly requires memory-backed snapshots in 'running' state.
         snap_res = self._cmd.run([
             "virsh", "snapshot-create-as", vm_name, snap_name,
-            "--description", "Clean Non-PE and PE Baseline Snapshot",
-            "--disk-only", "--atomic"
+            "--description", "Clean Non-PE and PE Baseline Snapshot with Memory"
         ])
-
-        if not snap_res.success:
-            # Fallback to standard snapshot
-            snap_res = self._cmd.run([
-                "virsh", "snapshot-create-as", vm_name, snap_name,
-                "--description", "Clean Non-PE and PE Baseline Snapshot"
-            ])
 
         if not snap_res.success:
             logger.error(f"Snapshot capture failed: {snap_res.stderr or snap_res.stdout}")
             return False
+
+        # Verify running state
+        verify_info = self._cmd.run(["virsh", "snapshot-info", vm_name, snap_name])
+        if "running" in verify_info.stdout:
+            logger.info(f"Baseline snapshot '{snap_name}' verified in 'running' state with RAM!")
+        else:
+            logger.warning(f"Snapshot created, verification output:\n{verify_info.stdout}")
 
         logger.info(f"Baseline snapshot '{snap_name}' saved successfully!")
 

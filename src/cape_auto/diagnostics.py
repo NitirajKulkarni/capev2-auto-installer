@@ -454,6 +454,33 @@ class DiagnosticsEngine:
         snap_check = self._cmd.run(["virsh", "snapshot-list", "cape-win"])
         if snap_check.success:
             result.raw_data["snapshots"] = snap_check.stdout
+            if "cape-clean" in snap_check.stdout:
+                # Check snapshot state - CAPEv2 strictly requires memory-backed snapshots in 'running' state
+                snap_info = self._cmd.run(["virsh", "snapshot-info", "cape-win", "cape-clean"])
+                snap_state = ""
+                if snap_info.success:
+                    for line in snap_info.stdout.splitlines():
+                        if line.strip().startswith("State:"):
+                            snap_state = line.split(":", 1)[1].strip()
+                            break
+                result.raw_data["cape_clean_state"] = snap_state
+                if snap_state and snap_state != "running":
+                    result.status = HealthStatus.FAIL.value
+                    result.severity = "high"
+                    result.symptoms.append(
+                        f"Snapshot 'cape-clean' is in '{snap_state}' state instead of 'running'. "
+                        "CAPEv2 requires snapshots taken of running VMs with live memory!"
+                    )
+                    result.probable_causes.append(
+                        "Snapshot was taken with --disk-only or taken while the VM was shut off."
+                    )
+                    result.recommended_repairs.append(
+                        "Run repair to automatically convert snapshot to live 'running' state with RAM: sudo ./repair.sh"
+                    )
+            else:
+                result.status = HealthStatus.WARN.value
+                result.symptoms.append("Snapshot 'cape-clean' missing for VM 'cape-win'")
+                result.recommended_repairs.append("Create baseline snapshot 'cape-clean'")
         else:
             result.raw_data["snapshots"] = "unavailable"
 
