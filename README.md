@@ -186,7 +186,7 @@ The guest deployment process is split into three clean phases:
    virsh snapshot-create-as cape-win cape-clean --disk-only --atomic
    ```
 3. **Machinery Binding**: Automatically registers snapshot metadata into `/opt/CAPEv2/conf/kvm.conf`.
-4. **Stack Launch**: Starts all CAPEv2 systemd microservices (`cape.service`, `cape-web.service`, `cape-processor.service`, `rooter.service`) in proper dependency order.
+4. **Stack Launch & Hermetic KVM Bindings**: Guarantees hermetic `libvirt-python` and cryptographic bindings in `/opt/CAPEv2/.venv`, creates desktop launcher shortcuts (`cape-start`, `cape-status`), and starts all four systemd microservices (`cape-rooter.service`, `cape.service`, `cape-processor.service`, `cape-web.service`) in strict dependency order with continuous health polling.
 
 ---
 
@@ -361,16 +361,27 @@ virsh vncdisplay cape-win
 
 ---
 
-### Q8: How to verify that the CAPE agent is listening inside Windows?
-Inside the Windows guest PowerShell:
-```powershell
-netstat -ano | findstr 8000
-```
-Or test via PowerShell:
-```powershell
-Test-NetConnection -Port 8000 -ComputerName 127.0.0.1
-```
-If `TcpTestSucceeded : True`, the CAPE agent HTTP server is active and listening.
+### Q8: What if the installer or host does not detect the agent after running `setup-agent.ps1`?
+**Quick Solution: Restart the Windows VM**  
+The provisioning script copies the official CAPE agent directly into the Windows Startup directory (`%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup\agent.pyw`). If the agent process didn't start or networking needs to re-initialize:
+1. Restart the Windows VM from the Ubuntu host:
+   ```bash
+   virsh reboot cape-win
+   # Or hard reset if unresponsive:
+   virsh reset cape-win
+   ```
+2. Once Windows boots to the desktop, the agent starts automatically via the Startup folder.
+3. Test connectivity from the Ubuntu host:
+   ```bash
+   curl -I http://192.168.250.100:8000/
+   ```
+4. If checking inside Windows guest PowerShell:
+   ```powershell
+   Test-NetConnection -Port 8000 -ComputerName 127.0.0.1
+   # Or check listening sockets:
+   netstat -ano | findstr 8000
+   ```
+   When `TcpTestSucceeded : True` or `curl` returns `HTTP 200 OK`, the installer will automatically detect the VM and proceed with snapshot creation.
 
 ---
 
@@ -422,6 +433,27 @@ sudo journalctl -u cape.service -f -n 30
 tail -f /opt/CAPEv2/log/cuckoo.log
 ```
 You will immediately observe KVM reverting `cape-win` to `cape-clean`, launching the VM, executing the sample, and advancing the task on the dashboard from **`pending` &rarr; `running` &rarr; `completed`**!
+
+---
+
+### Q12: What if `cape-processor` or `cape` fails with `ModuleNotFoundError: No module named 'libvirt'`?
+**Root Cause:**  
+Ubuntu installs system Python packages to `/usr/lib/python3/dist-packages/`, but CAPEv2 runs inside an isolated, hermetic virtual environment (`/opt/CAPEv2/.venv`). If `libvirt-python` is missing from the virtualenv, neither `cuckoo.py` nor `utils/process.py` can communicate with KVM, leaving virtual machines in `shut off` state.
+
+**Automated Protection:**  
+Both the main installer pipeline (`./install.sh`, `./clean-install.sh`) and self-repair (`./repair.sh`) automatically audit and compile `libvirt-python`, `certvalidator`, `asn1crypto`, and `mscerts` directly into `/opt/CAPEv2/.venv`.
+
+**Quick Manual Fix:**  
+```bash
+# 1. Install build dependencies and system libraries:
+sudo apt-get install -y pkg-config libvirt-dev python3-libvirt
+
+# 2. Inject bindings into the CAPEv2 virtualenv:
+sudo /opt/CAPEv2/.venv/bin/pip install libvirt-python certvalidator asn1crypto mscerts
+
+# 3. Restart all services:
+sudo systemctl restart cape-rooter cape cape-processor cape-web
+```
 
 ---
 

@@ -1161,7 +1161,7 @@ class Orchestrator:
             "build-essential", "python3-dev", "python3-venv", "python3-pip",
             "libffi-dev", "libssl-dev", "libjpeg-dev", "zlib1g-dev",
             "tmux", "htop", "jq", "unzip", "net-tools", "genisoimage",
-            "pkg-config", "libvirt-dev",
+            "pkg-config", "libvirt-dev", "python3-libvirt",
         ]
 
         # Install in batches to handle individual failures
@@ -2705,30 +2705,11 @@ WantedBy=multi-user.target
             self._stage_cape_config()
 
     def _stage_cape_start(self) -> None:
-        """Start CAPE services in correct order."""
-        # Service startup order
-        startup_order = ["cape-rooter", "cape-processor", "cape", "cape-web"]
-
-        for svc in startup_order:
-            svc_name = f"{svc}.service"
-            exists = self._cmd.run(["systemctl", "cat", svc_name])
-            if not exists.success:
-                logger.warning(f"Service {svc} not found, skipping")
-                continue
-
-            self._cmd.run(["systemctl", "enable", svc_name])
-            result = self._cmd.run(["systemctl", "start", svc_name], timeout=30)
-
-            if not result.success:
-                logger.warning(f"Service {svc} failed to start, attempting repair")
-                self._remediation.repair_service(svc)
-
-            # Verify
-            import time
-            time.sleep(2)
-            check = self._cmd.run(["systemctl", "is-active", svc_name])
-            status = check.stdout.strip()
-            logger.info(f"Service {svc}: {status}")
+        """Start CAPE services in correct dependency order with full health validation."""
+        logger.info("Starting CAPEv2 microservices in verified order...")
+        success = self._remediation.repair_cape_services()
+        if not success:
+            logger.warning("Some CAPEv2 services required remediation during startup")
 
         # Create desktop shortcut and launcher
         self._create_desktop_shortcuts()

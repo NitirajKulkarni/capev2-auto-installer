@@ -132,3 +132,51 @@ If `192.168.250.0/24` collides with an existing physical or VPN subnet:
    ```bash
    sudo ./install.sh --from-stage VM_CREATE
    ```
+
+---
+
+## 7. Tasks Stuck in 'Pending' State on Dashboard
+
+### Symptom
+- Submitted malware samples stay in `pending` indefinitely on the web interface; VM never powers on or reverts.
+
+### Root Cause
+- The web interface (`cape-web.service`) only creates the database entry.
+- VM lifecycle, snapshot reversion, and execution dispatch are controlled exclusively by `cape.service` (`cuckoo.py`) and `cape-processor.service` (`utils/process.py`). If either daemon is down or in a crash loop, tasks remain queued forever.
+
+### Automated Remediation & Manual Commands
+1. Run automated self-repair:
+   ```bash
+   sudo ./repair.sh
+   ```
+2. Or manually restart and verify the entire service stack:
+   ```bash
+   sudo systemctl restart cape-rooter cape cape-processor cape-web
+   sudo systemctl status cape-rooter cape cape-processor cape-web --lines=0
+   ```
+3. Watch the master scheduler pick up the pending tasks:
+   ```bash
+   sudo journalctl -u cape.service -f -n 30
+   ```
+
+---
+
+## 8. Missing `libvirt-python` in CAPEv2 Virtual Environment
+
+### Symptom
+- `cape.service` or `cape-processor.service` fails to start with:
+  `ModuleNotFoundError: No module named 'libvirt'` or `CuckooStartupError: check_snapshot_state()`.
+
+### Root Cause
+- Ubuntu provides `python3-libvirt` in system Python (`/usr/lib/python3/dist-packages/`), but CAPEv2 executes inside an isolated Python virtual environment (`/opt/CAPEv2/.venv`). Without native `libvirt-python` compiled into the venv, CAPE cannot talk to KVM.
+
+### Automated Remediation
+The installer (`install.sh`, `clean-install.sh`) and self-repair (`repair.sh`) automatically audit and install `pkg-config`, `libvirt-dev`, and `python3-libvirt`, compiling `libvirt-python`, `certvalidator`, `asn1crypto`, and `mscerts` directly into `/opt/CAPEv2/.venv`.
+
+### Manual Recovery
+```bash
+sudo apt-get install -y pkg-config libvirt-dev python3-libvirt
+sudo /opt/CAPEv2/.venv/bin/pip install libvirt-python certvalidator asn1crypto mscerts
+sudo systemctl restart cape-rooter cape cape-processor cape-web
+```
+

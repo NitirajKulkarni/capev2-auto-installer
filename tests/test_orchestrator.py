@@ -158,8 +158,8 @@ enabled = false
         self.assertIn("EnableLUA", content)
         self.assertIn("wuauserv", content)
         self.assertIn("Set-NetFirewallProfile", content)
-        self.assertIn("http://+:8000/", content)
-        self.assertIn("start-cape-agent.bat", content)
+        self.assertIn("agent.pyw", content)
+        self.assertIn("python-installer.exe", content)
 
     def test_generate_unattended_iso_call(self):
         from unittest.mock import MagicMock
@@ -293,7 +293,7 @@ enabled = false
 
         calls = [c[0][0] for c in mock_cmd.run.call_args_list]
         self.assertIn(["virsh", "destroy", "cape-win"], calls)
-        self.assertIn(["virsh", "undefine", "cape-win", "--remove-all-storage", "--nvram", "--snapshots-metadata"], calls)
+        self.assertIn(["virsh", "undefine", "cape-win", "--nvram", "--snapshots-metadata"], calls)
 
     def test_stage_cape_install_execution(self):
         from unittest.mock import MagicMock
