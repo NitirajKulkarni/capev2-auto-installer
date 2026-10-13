@@ -2713,12 +2713,23 @@ WantedBy=multi-user.target
         vm_name = self._config.get_str("guest.name", "cape-win")
         snap_name = self._config.get_str("guest.snapshot_name", "cape-clean")
 
+        # Remove any stale snapshot from libvirt and QEMU block devices
+        self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name], quiet=True)
+        self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name, "--metadata"], quiet=True)
+        self._cmd.run(["virsh", "qemu-monitor-command", vm_name, "--hmp", f"delvm {snap_name}"], quiet=True)
+
         # Create snapshot
         logger.info(f"Creating snapshot '{snap_name}' for VM '{vm_name}'")
         result = self._cmd.run([
             "virsh", "snapshot-create-as", vm_name, snap_name,
             "--description", "Clean snapshot for CAPE analysis"
         ])
+        if not result.success and "already exists in one or more devices" in (result.stderr or "").lower():
+            self._cmd.run(["virsh", "qemu-monitor-command", vm_name, "--hmp", f"delvm {snap_name}"], quiet=True)
+            result = self._cmd.run([
+                "virsh", "snapshot-create-as", vm_name, snap_name,
+                "--description", "Clean snapshot for CAPE analysis"
+            ])
 
         if result.success:
             self._state.register_resource(
@@ -3248,15 +3259,24 @@ StartupNotify=true
 
         # ─── STEP 5: Capture Clean Baseline Snapshot & Save ───────────────────
         logger.info(f"[5/5] Capturing and saving clean baseline snapshot '{snap_name}' for '{vm_name}' (with RAM)...")
-        # Remove old snapshot if present (including metadata if external)
+        # Remove old snapshot if present (including metadata if external and QEMU device table)
         self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name], quiet=True)
         self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name, "--metadata"], quiet=True)
+        self._cmd.run(["virsh", "qemu-monitor-command", vm_name, "--hmp", f"delvm {snap_name}"], quiet=True)
 
         # IMPORTANT: Do NOT use --disk-only. CAPEv2 strictly requires memory-backed snapshots in 'running' state.
         snap_res = self._cmd.run([
             "virsh", "snapshot-create-as", vm_name, snap_name,
             "--description", "Clean Non-PE and PE Baseline Snapshot with Memory"
         ])
+
+        if not snap_res.success and "already exists in one or more devices" in (snap_res.stderr or "").lower():
+            logger.warning(f"Snapshot '{snap_name}' conflict detected in QEMU devices. Forcing delvm...")
+            self._cmd.run(["virsh", "qemu-monitor-command", vm_name, "--hmp", f"delvm {snap_name}"], quiet=True)
+            snap_res = self._cmd.run([
+                "virsh", "snapshot-create-as", vm_name, snap_name,
+                "--description", "Clean Non-PE and PE Baseline Snapshot with Memory"
+            ])
 
         if not snap_res.success:
             logger.error(f"Snapshot capture failed: {snap_res.stderr or snap_res.stdout}")

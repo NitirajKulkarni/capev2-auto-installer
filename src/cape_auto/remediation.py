@@ -664,13 +664,12 @@ WantedBy=multi-user.target
             logger.info("Allowing guest system to settle before capturing baseline memory snapshot...")
             time.sleep(5)
 
-        # Step 6: Delete previous invalid snapshot if exists
-        if snap_info.success:
-            logger.info(f"Deleting outdated snapshot '{snap_name}' (state: {current_state})...")
-            del_res = self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name])
-            if not del_res.success:
-                logger.debug(f"Direct delete failed; attempting with --metadata: {del_res.stderr}")
-                self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name, "--metadata"])
+        # Step 6: Delete previous invalid snapshot if exists in libvirt or directly in QEMU block devices
+        logger.info(f"Purging previous '{snap_name}' snapshot from libvirt and QEMU devices...")
+        self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name], quiet=True)
+        self._cmd.run(["virsh", "snapshot-delete", vm_name, snap_name, "--metadata"], quiet=True)
+        # Purge directly from QEMU block device table via monitor delvm command
+        self._cmd.run(["virsh", "qemu-monitor-command", vm_name, "--hmp", f"delvm {snap_name}"], quiet=True)
 
         # Check domain state right before taking snapshot
         cur_domstate = self._cmd.run(["virsh", "domstate", vm_name]).stdout.strip().lower()
@@ -683,6 +682,7 @@ WantedBy=multi-user.target
                     time.sleep(3)
                     break
                 time.sleep(3)
+            self._cmd.run(["virsh", "qemu-monitor-command", vm_name, "--hmp", f"delvm {snap_name}"], quiet=True)
 
         # Step 7: Create clean live snapshot with memory
         # IMPORTANT: Do NOT use --disk-only. We need full memory state so snapshot state is 'running'.
@@ -691,6 +691,17 @@ WantedBy=multi-user.target
             "virsh", "snapshot-create-as", vm_name, snap_name,
             "--description", "Clean Running Baseline with Memory for CAPEv2",
         ], timeout=180)
+
+        # Handle conflict if snapshot already exists in one or more devices
+        if not create_res.success and "already exists in one or more devices" in (create_res.stderr or "").lower():
+            logger.warning(f"Snapshot '{snap_name}' conflict detected in QEMU block devices. Forcing QEMU delvm...")
+            self._cmd.run(["virsh", "qemu-monitor-command", vm_name, "--hmp", f"delvm {snap_name}"])
+            import time
+            time.sleep(2)
+            create_res = self._cmd.run([
+                "virsh", "snapshot-create-as", vm_name, snap_name,
+                "--description", "Clean Running Baseline with Memory for CAPEv2",
+            ], timeout=180)
 
         # If it failed because domain was not running, retry once after reviving domain
         if not create_res.success and "domain is not running" in (create_res.stderr or "").lower():
@@ -702,6 +713,7 @@ WantedBy=multi-user.target
                     time.sleep(5)
                     break
                 time.sleep(3)
+            self._cmd.run(["virsh", "qemu-monitor-command", vm_name, "--hmp", f"delvm {snap_name}"], quiet=True)
             create_res = self._cmd.run([
                 "virsh", "snapshot-create-as", vm_name, snap_name,
                 "--description", "Clean Running Baseline with Memory for CAPEv2",
