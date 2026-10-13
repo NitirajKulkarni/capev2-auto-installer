@@ -311,6 +311,14 @@ class DiagnosticsEngine:
                 result.symptoms.append("CAPE Python imports may have issues")
                 result.evidence.append(test_import.stderr[:500])
 
+            # Check libvirt-python specifically (required for KVM machinery and result processing)
+            test_lv = self._cmd.run([py_bin, "-c", "import libvirt"], cwd=self._cape_root, timeout=10)
+            if not test_lv.success:
+                result.status = HealthStatus.FAIL.value
+                result.severity = "high"
+                result.symptoms.append("libvirt-python is missing in CAPE virtualenv (required for KVM machinery)")
+                result.recommended_repairs.append("Install libvirt-python: sudo apt install -y libvirt-dev pkg-config && sudo /opt/CAPEv2/.venv/bin/pip install libvirt-python")
+
         return result
 
     def diagnose_database(self) -> DiagnosticResult:

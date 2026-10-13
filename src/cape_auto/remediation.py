@@ -178,6 +178,16 @@ class RemediationEngine:
         self.repair_cape_permissions(cape_root, cape_user)
         self._cmd.run(["usermod", "-aG", "libvirt,kvm", cape_user])
 
+        # Ensure libvirt-python and crypto helpers are installed inside virtualenv
+        check_lv = self._cmd.run([py_bin, "-c", "import libvirt"])
+        if not check_lv.success:
+            logger.info("Installing missing libvirt-python in CAPE virtual environment...")
+            self._cmd.run(["apt-get", "install", "-y", "pkg-config", "libvirt-dev", "python3-libvirt"])
+            uv_bin = "/usr/local/bin/uv" if os.path.isfile("/usr/local/bin/uv") else "uv"
+            install_res = self._cmd.run([uv_bin, "pip", "install", "--python", py_bin, "libvirt-python", "certvalidator", "asn1crypto", "mscerts"])
+            if not install_res.success:
+                self._cmd.run([py_bin, "-m", "pip", "install", "--prefer-binary", "libvirt-python", "certvalidator", "asn1crypto", "mscerts"])
+
         # 5. Synthesize clean systemd service units with verified arguments
         units = {
             "cape-rooter": f"""[Unit]

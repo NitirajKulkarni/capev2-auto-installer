@@ -1548,8 +1548,25 @@ class Orchestrator:
         self._cmd.run(["chown", "-R", f"{cape_user}:{cape_user}", cape_root], timeout=60)
 
         # Verify critical dependencies inside virtualenv
-        logger.info("Verifying installed CAPEv2 dependencies (Django)...")
+        logger.info("Verifying installed CAPEv2 dependencies (Django, libvirt)...")
         active_py = venv_python if os.path.isfile(venv_python) else "python3"
+
+        # Ensure libvirt-python and crypto helpers are installed in virtualenv for KVM machinery
+        lv_check = self._cmd.run_as_user([active_py, "-c", "import libvirt"], user=cape_user, cwd=cape_root)
+        if not lv_check.success:
+            logger.info("Installing libvirt-python, certvalidator, asn1crypto, mscerts into virtualenv...")
+            self._cmd.run(["apt-get", "install", "-y", "pkg-config", "libvirt-dev", "python3-libvirt"])
+            if python_mgr == "uv":
+                self._cmd.run_as_user(
+                    [uv_bin, "pip", "install", "--python", venv_python, "libvirt-python", "certvalidator", "asn1crypto", "mscerts"],
+                    user=cape_user, cwd=cape_root, timeout=300, env=uv_env
+                )
+            else:
+                self._cmd.run_as_user(
+                    [active_py, "-m", "pip", "install", "libvirt-python", "certvalidator", "asn1crypto", "mscerts"],
+                    user=cape_user, cwd=cape_root, timeout=300
+                )
+
         verify_res = self._cmd.run_as_user(
             [active_py, "-c", "import django; print('CAPE core dependencies verified')"],
             user=cape_user,
