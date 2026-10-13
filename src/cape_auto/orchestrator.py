@@ -334,14 +334,15 @@ class Orchestrator:
         report = self._diag.generate_report(results)
         print(report)
 
-        # Attempt repairs for failures
+        # Attempt repairs for failures and warnings
         repaired = 0
         for r in results:
-            if r.status == HealthStatus.FAIL.value:
-                logger.info(f"Attempting repair for: {r.component}")
+            if r.status in (HealthStatus.FAIL.value, HealthStatus.WARN.value):
                 error_cat = self._map_component_to_error(r.component)
-                if self._attempt_repair(error_cat, r.component):
-                    repaired += 1
+                if error_cat != "UNKNOWN_ERROR":
+                    logger.info(f"Attempting repair for: {r.component} (error category: {error_cat})")
+                    if self._attempt_repair(error_cat, r.component):
+                        repaired += 1
 
         if repaired > 0:
             logger.info(f"Repaired {repaired} component(s). Re-running diagnostics...")
@@ -1791,15 +1792,19 @@ WantedBy=multi-user.target
             "cape": f"""[Unit]
 Description=CAPE Sandbox Service
 After=network.target mongodb.service postgresql.service cape-rooter.service
+Wants=cape-rooter.service
 
 [Service]
 Type=simple
 User={cape_user}
 Group={cape_user}
 WorkingDirectory={cape_root}
+Environment=PYTHONPATH={cape_root}
+Environment=PYTHONUNBUFFERED=1
 ExecStart={py_bin} {cape_root}/cuckoo.py
 Restart=always
 RestartSec=10
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
@@ -1807,15 +1812,19 @@ WantedBy=multi-user.target
             "cape-processor": f"""[Unit]
 Description=CAPE Processing Engine
 After=network.target mongodb.service postgresql.service cape.service
+Wants=cape.service
 
 [Service]
 Type=simple
 User={cape_user}
 Group={cape_user}
 WorkingDirectory={cape_root}
-ExecStart={py_bin} {cape_root}/utils/process.py auto
+Environment=PYTHONPATH={cape_root}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={py_bin} {cape_root}/utils/process.py -p 2 auto
 Restart=always
 RestartSec=10
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
@@ -1829,6 +1838,8 @@ Type=simple
 User={cape_user}
 Group={cape_user}
 WorkingDirectory={cape_root}/web
+Environment=PYTHONPATH={cape_root}
+Environment=PYTHONUNBUFFERED=1
 ExecStart={py_bin} manage.py runserver 0.0.0.0:8000
 Restart=always
 RestartSec=5

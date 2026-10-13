@@ -129,18 +129,112 @@ class RemediationEngine:
 
     def repair_cape_services(self) -> bool:
         """Repair and ensure all CAPEv2 systemd services are active."""
-        logger.info("Ensuring all CAPEv2 systemd services are running...")
+        logger.info("Ensuring all CAPEv2 systemd services are properly configured and running...")
+        cape_root = "/opt/CAPEv2"
+        venv_py = os.path.join(cape_root, ".venv", "bin", "python")
+        py_bin = venv_py if os.path.isfile(venv_py) else "/usr/bin/python3"
+        cape_user = "cape"
+
+        # 1. Enforce correct ownership and libvirt/kvm group membership
+        self.repair_cape_permissions(cape_root, cape_user)
+        self._cmd.run(["usermod", "-aG", "libvirt,kvm", cape_user])
+
+        # 2. Synthesize correct systemd service units to overwrite broken Poetry references
+        units = {
+            "cape-rooter": f"""[Unit]
+Description=CAPE Rooter Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart={py_bin} {cape_root}/utils/rooter.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+""",
+            "cape": f"""[Unit]
+Description=CAPE Sandbox Service
+After=network.target mongodb.service postgresql.service cape-rooter.service
+Wants=cape-rooter.service
+
+[Service]
+Type=simple
+User={cape_user}
+Group={cape_user}
+WorkingDirectory={cape_root}
+Environment=PYTHONPATH={cape_root}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={py_bin} {cape_root}/cuckoo.py
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+""",
+            "cape-processor": f"""[Unit]
+Description=CAPE Processing Engine
+After=network.target mongodb.service postgresql.service cape.service
+Wants=cape.service
+
+[Service]
+Type=simple
+User={cape_user}
+Group={cape_user}
+WorkingDirectory={cape_root}
+Environment=PYTHONPATH={cape_root}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={py_bin} {cape_root}/utils/process.py -p 2 auto
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+""",
+            "cape-web": f"""[Unit]
+Description=CAPE Web Interface
+After=network.target mongodb.service postgresql.service cape.service
+
+[Service]
+Type=simple
+User={cape_user}
+Group={cape_user}
+WorkingDirectory={cape_root}/web
+Environment=PYTHONPATH={cape_root}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={py_bin} manage.py runserver 0.0.0.0:8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+""",
+        }
+
+        for svc, unit_content in units.items():
+            unit_file = f"/etc/systemd/system/{svc}.service"
+            try:
+                with open(unit_file, "w", encoding="utf-8") as f:
+                    f.write(unit_content)
+            except Exception as e:
+                logger.debug(f"Could not rewrite unit {unit_file}: {e}")
+
+        self._cmd.run(["systemctl", "daemon-reload"])
+
+        # 3. Enable and start in required dependency order
         services = ["cape-rooter", "cape", "cape-processor", "cape-web"]
         all_ok = True
         for svc in services:
             svc_name = f"{svc}.service"
-            exists = self._cmd.run(["systemctl", "cat", svc_name])
-            if not exists.success:
-                continue
+            self._cmd.run(["systemctl", "enable", svc_name])
             active = self._cmd.run(["systemctl", "is-active", svc_name])
             if active.stdout.strip() != "active":
-                logger.info(f"Service {svc} is not active ({active.stdout.strip()}). Enabling and starting...")
-                self._cmd.run(["systemctl", "enable", svc_name])
+                logger.info(f"Service {svc} is not active ({active.stdout.strip()}). Starting/repairing...")
                 if not self.repair_service(svc):
                     all_ok = False
         return all_ok

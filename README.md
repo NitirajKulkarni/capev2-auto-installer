@@ -388,6 +388,43 @@ No! CAPEv2 takes an average of 3 to 6 minutes to fully execute a malware payload
 
 ---
 
+### Q11: Why is my submitted task stuck on 'Pending' on the web dashboard while the VM does nothing?
+**Root Cause:**  
+The CAPEv2 Web UI (`cape-web.service`) only creates the task record in the database. It does not interact with KVM.  
+The actual task execution and VM lifecycle is managed by **`cape.service`** (the master sandbox scheduler running `cuckoo.py`), and result extraction is handled by **`cape-processor.service`** (`utils/process.py`). If either daemon is stopped or inactive, tasks remain in `pending` forever and the VM will never be started or reverted!
+
+**Instant Fix:**  
+Ensure all four CAPEv2 microservices are active:
+```bash
+# 1. Enable and start all microservices:
+sudo systemctl enable --now cape-rooter cape cape-processor cape-web
+
+# 2. Or let the autonomous repair engine fix and start them:
+sudo ./repair.sh
+
+# 3. Or use the master CLI launcher:
+cape-start
+```
+
+**Verify Service Health:**
+```bash
+cape-status
+# Or via systemctl:
+sudo systemctl status cape-rooter cape cape-processor cape-web --lines=0
+```
+All four services must report `active (running)`.
+
+**Watch Live Task Scheduling:**  
+Once `cape.service` is active, watch the logs as it immediately claims the pending task:
+```bash
+sudo journalctl -u cape.service -f -n 30
+# Or via logfile:
+tail -f /opt/CAPEv2/log/cuckoo.log
+```
+You will immediately observe KVM reverting `cape-win` to `cape-clean`, launching the VM, executing the sample, and advancing the task on the dashboard from **`pending` &rarr; `running` &rarr; `completed`**!
+
+---
+
 ## ⚙️ Configuration File (`config.toml`)
 
 Customize your deployment in [`config.toml`](config.toml). Sane, secure defaults are provided:
