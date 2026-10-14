@@ -216,6 +216,26 @@ if (-not (Test-Path $pythonExe)) {
 Add-ToSystemPath "C:\Program Files\Python310"
 Add-ToSystemPath "C:\Program Files\Python310\Scripts"
 
+# 13B. Install Adoptium OpenJDK JRE silently (CRITICAL: fixes .jar analysis and jar.py package)
+$javaMsi = Get-ChildItem -Path $mediaDrive -Filter "*openjdk*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $javaMsi) {
+    $javaMsi = Get-ChildItem -Path $mediaDrive -Filter "*jre*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if ($javaMsi) {
+    Write-Host "[*] Installing Adoptium OpenJDK JRE silently from $($javaMsi.FullName)..." -ForegroundColor Yellow
+    $p = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$($javaMsi.FullName)`" /qn ADDLOCAL=FeatureMain,FeatureJavaHome,FeatureJarFileRunWith,FeatureOracleJavaSoft /norestart" -Wait -PassThru
+    Write-Host "[+] Adoptium OpenJDK JRE installed (ExitCode: $($p.ExitCode))" -ForegroundColor Green
+    $adoptiumExe = Get-ChildItem -Path "C:\Program Files\Eclipse Adoptium" -Filter "java.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($adoptiumExe) {
+        Add-ToSystemPath $adoptiumExe.DirectoryName
+    }
+} elseif (Test-Path "C:\Program Files\Eclipse Adoptium") {
+    $adoptiumExe = Get-ChildItem -Path "C:\Program Files\Eclipse Adoptium" -Filter "java.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($adoptiumExe) {
+        Add-ToSystemPath $adoptiumExe.DirectoryName
+    }
+}
+
 # 14. Online Bulk Package Manager (Chocolatey) - Automated Bulk Non-PE Enabler
 $isOnline = $false
 try {

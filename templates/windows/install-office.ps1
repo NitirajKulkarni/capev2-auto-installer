@@ -1,5 +1,6 @@
-# CAPEv2 Microsoft Office & Non-PE Runtimes Automated Installer
-# Installs Microsoft Office (Word, Excel, PowerPoint) via official Microsoft ODT,
+# CAPEv2 Microsoft Office & Non-PE Runtimes Automated Installer (100% Offline)
+# Installs Microsoft Office 2019 (Word, Excel, PowerPoint) from preloaded host media
+# via Click-to-Run / Office Deployment Tool (officedeploymenttool engine),
 # installs Java JRE for .jar analysis, applies permanent Macro/Protected View bypasses,
 # and verifies CAPE sandbox readiness.
 #
@@ -11,9 +12,43 @@ Start-Transcript -Path "C:\cape-office-setup.log" -Append -ErrorAction SilentlyC
 
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "  CAPEv2 Automated Microsoft Office & Runtime Installer" -ForegroundColor Cyan
+Write-Host "  (100% Offline Host-Preloaded Architecture)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
-# 1. Check for existing Microsoft Office installation
+# Helper function to append to System Machine PATH
+function Add-ToSystemPath {
+    param([string]$Dir)
+    if (Test-Path $Dir) {
+        $curr = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($curr -notlike "*$Dir*") {
+            [Environment]::SetEnvironmentVariable("Path", "$curr;$Dir", "Machine")
+            $env:Path = "$Dir;$env:Path"
+            Write-Host "[+] Added '$Dir' to System PATH" -ForegroundColor Green
+        }
+    }
+}
+
+# 1. Drive & Media Discovery
+Write-Host "[*] Discovering system drives and attached installation media..." -ForegroundColor Yellow
+$allDrives = Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root
+
+$mediaDrive = $null
+foreach ($d in $allDrives) {
+    if ((Test-Path (Join-Path $d "agent.pyw")) -or 
+        (Test-Path (Join-Path $d "install-office.ps1")) -or 
+        (Test-Path (Join-Path $d "python-installer.exe"))) {
+        $mediaDrive = $d
+        break
+    }
+}
+if (-not $mediaDrive) {
+    foreach ($d in @("E:\", "D:\", "F:\", "G:\")) {
+        if (Test-Path $d) { $mediaDrive = $d; break }
+    }
+}
+Write-Host "[+] Tools & Agent media drive: $($mediaDrive ?? 'Not found (using C:\)')" -ForegroundColor $(if ($mediaDrive) { "Green" } else { "Yellow" })
+
+# 2. Check for existing Microsoft Office installation
 $excelPaths = @(
     "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
     "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE",
@@ -32,69 +67,66 @@ foreach ($path in $excelPaths) {
 }
 
 if ($foundExcel) {
-    Write-Host "[+] Microsoft Excel is already installed at: $foundExcel" -ForegroundColor Green
+    Write-Host "[+] Microsoft Office is already installed: $foundExcel" -ForegroundColor Green
 } else {
-    Write-Host "[*] Microsoft Office not detected. Beginning automated deployment..." -ForegroundColor Yellow
+    Write-Host "[*] Microsoft Office not detected. Locating preloaded offline installation media..." -ForegroundColor Yellow
 
-    # Locate media drive (Drive E: / D:)
-    $mediaDrive = (Get-PSDrive -PSProvider FileSystem | Where-Object { 
-        (Test-Path (Join-Path $_.Root "agent.pyw")) -or 
-        (Test-Path (Join-Path $_.Root "install-office.ps1")) 
-    }).Root
+    # Discover Office Drive (attached as secondary optical drive or ISO/IMG)
+    $officeDrive = $null
+    $mountedIso = $null
 
-    if (-not $mediaDrive) {
-        foreach ($d in @("E:\", "D:\", "F:\")) {
-            if (Test-Path $d) { $mediaDrive = $d; break }
+    # A) Check each drive for Setup.exe and Office\Setup64.exe or Office\data
+    foreach ($d in $allDrives) {
+        $setup64 = Join-Path $d "Office\Setup64.exe"
+        $officeData = Join-Path $d "Office\data"
+        $rootSetup = Join-Path $d "Setup.exe"
+        if ((Test-Path $setup64) -or (Test-Path $officeData) -or ((Test-Path $rootSetup) -and ($d -ne $mediaDrive))) {
+            $officeDrive = $d
+            Write-Host "[+] Detected Office 2019 media on drive: $officeDrive" -ForegroundColor Green
+            break
         }
     }
 
-    # Check for local Office installer / ISO on media drive
-    $localOffice = $null
-    if ($mediaDrive) {
-        $localOffice = Get-ChildItem -Path $mediaDrive -Filter "*office*.iso" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $localOffice) {
-            $localOffice = Get-ChildItem -Path $mediaDrive -Filter "*office*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    # B) If not found as an attached drive, check for .iso or .img files on media drive or C:\
+    if (-not $officeDrive) {
+        $searchDirs = @($mediaDrive, "C:\", "D:\", "E:\") | Where-Object { $_ -and (Test-Path $_) }
+        $isoCandidates = @()
+        foreach ($sdir in $searchDirs) {
+            $isoCandidates += Get-ChildItem -Path $sdir -Filter "*office*.iso" -ErrorAction SilentlyContinue
+            $isoCandidates += Get-ChildItem -Path $sdir -Filter "*office*.img" -ErrorAction SilentlyContinue
+            $isoCandidates += Get-ChildItem -Path $sdir -Filter "*ProPlus*.img" -ErrorAction SilentlyContinue
+            $isoCandidates += Get-ChildItem -Path $sdir -Filter "*ProPlus*.iso" -ErrorAction SilentlyContinue
         }
-    }
 
-    if ($localOffice) {
-        Write-Host "[*] Found local Office installation media at $($localOffice.FullName)..." -ForegroundColor Yellow
-        # If ISO, mount and run setup
-        if ($localOffice.Extension -eq ".iso") {
-            $mount = Mount-DiskImage -ImagePath $localOffice.FullName -PassThru
-            $driveLetter = ($mount | Get-Volume).DriveLetter + ":"
-            $setup = Join-Path $driveLetter "setup.exe"
-            if (Test-Path $setup) {
-                Start-Process -FilePath $setup -ArgumentList "/configure configuration.xml" -Wait
+        $isoFile = $isoCandidates | Select-Object -First 1
+        if ($isoFile) {
+            Write-Host "[*] Found Office disk image at '$($isoFile.FullName)'. Mounting image..." -ForegroundColor Yellow
+            try {
+                $mount = Mount-DiskImage -ImagePath $isoFile.FullName -PassThru
+                $letter = ($mount | Get-Volume).DriveLetter
+                if ($letter) {
+                    $officeDrive = "$letter`:\"
+                    $mountedIso = $isoFile.FullName
+                    Write-Host "[+] Mounted Office image as drive $officeDrive" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "[!] Could not mount disk image: $_" -ForegroundColor DarkGray
             }
-            Dismount-DiskImage -ImagePath $localOffice.FullName -ErrorAction SilentlyContinue
-        } else {
-            Start-Process -FilePath $localOffice.FullName -ArgumentList "/quiet /norestart" -Wait
         }
-    } else {
-        # Automated deployment via Microsoft Office Deployment Tool (ODT) directly from Microsoft CDN
+    }
+
+    if ($officeDrive) {
+        Write-Host "[*] Executing 100% offline Microsoft Office 2019 installation from $officeDrive..." -ForegroundColor Yellow
+
         $odtDir = "C:\OfficeODT"
         if (-not (Test-Path $odtDir)) {
             New-Item -ItemType Directory -Path $odtDir -Force | Out-Null
         }
 
-        $odtUrl = "https://download.microsoft.com/download/2/7/A/27AF1BE6-DD20-4CB4-B154-EBAB8A7D4A7E/officedeploymenttool_17328-20162.exe"
-        $odtExe = Join-Path $odtDir "odt_setup.exe"
-        $setupExe = Join-Path $odtDir "setup.exe"
-
-        Write-Host "[*] Downloading official Office Deployment Tool from Microsoft..." -ForegroundColor Yellow
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
-            (New-Object Net.WebClient).DownloadFile($odtUrl, $odtExe)
-
-            Write-Host "[*] Extracting ODT setup engine..." -ForegroundColor Yellow
-            Start-Process -FilePath $odtExe -ArgumentList "/quiet /extract:$odtDir" -Wait
-
-            if (Test-Path $setupExe) {
-                # Create tailored configuration for Word, Excel, PowerPoint
-                $configXml = @"
+        # Create tailored offline configuration XML
+        $configXml = @"
 <Configuration>
-  <Add OfficeClientEdition="64" Channel="Current">
+  <Add SourcePath="$officeDrive" OfficeClientEdition="64">
     <Product ID="ProPlus2019Retail">
       <Language ID="en-us" />
       <ExcludeApp ID="OneDrive" />
@@ -108,40 +140,61 @@ if ($foundExcel) {
   <Property Name="AUTOACTIVATE" Value="0" />
 </Configuration>
 "@
-                $configPath = Join-Path $odtDir "configuration.xml"
-                Set-Content -Path $configPath -Value $configXml -Encoding Ascii
+        $configPath = Join-Path $odtDir "configuration.xml"
+        Set-Content -Path $configPath -Value $configXml -Encoding Ascii
 
-                Write-Host "[*] Downloading and installing Microsoft Office ProPlus (Word, Excel, PowerPoint)..." -ForegroundColor Yellow
-                Write-Host "[*] Note: Genuine Office components are streaming from Microsoft CDN (takes ~5-8 mins)..." -ForegroundColor Cyan
-                
-                $installProcess = Start-Process -FilePath $setupExe -ArgumentList "/configure `"$configPath`"" -PassThru
+        $setupExe = Join-Path $officeDrive "Setup.exe"
+        $setup64Exe = Join-Path $officeDrive "Office\Setup64.exe"
 
-                # Monitor installation progress
-                $timeoutSeconds = 900 # 15 minutes max
-                $elapsed = 0
-                while (-not $installProcess.HasExited -and $elapsed -lt $timeoutSeconds) {
-                    Start-Sleep -Seconds 10
-                    $elapsed += 10
-                    $ctrProc = Get-Process -Name "OfficeClickToRun" -ErrorAction SilentlyContinue
-                    if ($ctrProc) {
-                        Write-Host "  ... Office Click-to-Run is active (Elapsed: ${elapsed}s)" -ForegroundColor DarkGray
-                    }
-                }
-
-                if (-not $installProcess.HasExited) {
-                    Write-Host "[!] Note: Office setup still executing in background..." -ForegroundColor Yellow
-                }
-            } else {
-                Write-Host "[-] Failed to extract ODT setup.exe" -ForegroundColor Red
-            }
-        } catch {
-            Write-Host "[!] Note on ODT installation: $_" -ForegroundColor DarkGray
+        $installerProc = $null
+        if (Test-Path $setupExe) {
+            Write-Host "[*] Running: $setupExe /configure $configPath" -ForegroundColor Yellow
+            $installerProc = Start-Process -FilePath $setupExe -ArgumentList "/configure `"$configPath`"" -PassThru
+        } elseif (Test-Path $setup64Exe) {
+            Write-Host "[*] Running: $setup64Exe" -ForegroundColor Yellow
+            $installerProc = Start-Process -FilePath $setup64Exe -PassThru
         }
+
+        # Wait for Office Click-to-Run installation to complete
+        Write-Host "[*] Installing Microsoft Office components silently in background (takes ~3-6 minutes)..." -ForegroundColor Cyan
+        $timeoutSeconds = 900
+        $elapsed = 0
+        while ($elapsed -lt $timeoutSeconds) {
+            Start-Sleep -Seconds 10
+            $elapsed += 10
+            $ctr = Get-Process -Name "OfficeClickToRun" -ErrorAction SilentlyContinue
+            if ($ctr) {
+                Write-Host "  ... Office Click-to-Run is actively installing components (Elapsed: ${elapsed}s)" -ForegroundColor DarkGray
+            } else {
+                # If OfficeClickToRun has exited, check if Excel exists
+                $installed = $false
+                foreach ($p in $excelPaths) {
+                    if (Test-Path $p) { $installed = $true; break }
+                }
+                if ($installed) {
+                    Write-Host "[+] Office installation finished successfully in ${elapsed}s!" -ForegroundColor Green
+                    break
+                }
+                if ($elapsed -ge 60 -and -not $ctr) {
+                    Write-Host "[*] OfficeClickToRun finished." -ForegroundColor Yellow
+                    break
+                }
+            }
+        }
+
+        if ($mountedIso) {
+            Dismount-DiskImage -ImagePath $mountedIso -ErrorAction SilentlyContinue
+        }
+    } else {
+        Write-Host "[-] Office installation media not detected on any optical drive or path!" -ForegroundColor Yellow
+        Write-Host "    To install Office completely offline:" -ForegroundColor Cyan
+        Write-Host "    Run 'sudo ./enable-nonpe.sh' on your Ubuntu host." -ForegroundColor Cyan
+        Write-Host "    This auto-downloads the Office 2019 media and attaches it as Drive F: to this VM." -ForegroundColor Cyan
     }
 }
 
-# 2. Configure Office Sandbox Security Bypass (Enable all Macros & Disable Protected View)
-Write-Host "[*] Applying Sandbox Security Bypass for Microsoft Office..." -ForegroundColor Yellow
+# 3. Configure Office Sandbox Security Bypass (Enable all Macros & Disable Protected View)
+Write-Host "[*] Configuring Microsoft Office Sandbox Security Bypass..." -ForegroundColor Yellow
 try {
     $officeVersions = @("16.0", "15.0", "14.0", "12.0")
     $apps = @("Word", "Excel", "PowerPoint", "Access")
@@ -174,49 +227,110 @@ try {
         }
         Set-ItemProperty -Path $excelSecurity -Name "XL4Macros" -Value 1 -Force -ErrorAction SilentlyContinue
     }
+
+    # Disable First-Run screens, Welcome popups, and Privacy prompts
+    $commonGeneral = "HKCU:\Software\Microsoft\Office\16.0\Common\General"
+    if (-not (Test-Path $commonGeneral)) { New-Item -Path $commonGeneral -Force | Out-Null }
+    Set-ItemProperty -Path $commonGeneral -Name "ShownFirstRunOptin" -Value 1 -Force -ErrorAction SilentlyContinue
+
+    $commonPT = "HKCU:\Software\Microsoft\Office\16.0\Common\PTAware"
+    if (-not (Test-Path $commonPT)) { New-Item -Path $commonPT -Force | Out-Null }
+    Set-ItemProperty -Path $commonPT -Name "PTAware" -Value 1 -Force -ErrorAction SilentlyContinue
+
+    $commonPrivacy = "HKCU:\Software\Microsoft\Office\16.0\Common\Privacy"
+    if (-not (Test-Path $commonPrivacy)) { New-Item -Path $commonPrivacy -Force | Out-Null }
+    Set-ItemProperty -Path $commonPrivacy -Name "DisconnectedState" -Value 2 -Force -ErrorAction SilentlyContinue
+
     Write-Host "[+] Office Macro and Protected View bypasses applied successfully!" -ForegroundColor Green
 } catch {
     Write-Host "[!] Note on Office registry configuration: $_" -ForegroundColor DarkGray
 }
 
-# 3. Ensure Java Runtime (JRE) is installed for .jar analysis
+# 4. Ensure Java Runtime (JRE) is installed for .jar analysis (100% Offline)
 Write-Host "[*] Checking Java Runtime Environment (.jar handler)..." -ForegroundColor Yellow
 $javaCmd = Get-Command java.exe -ErrorAction SilentlyContinue
 if (-not $javaCmd) {
-    if (Test-Path "C:\Program Files\Java") {
-        $javaExe = Get-ChildItem -Path "C:\Program Files\Java" -Filter "java.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($javaExe) {
-            $javaDir = $javaExe.DirectoryName
-            $p = [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if ($p -notlike "*$javaDir*") {
-                [Environment]::SetEnvironmentVariable("Path", "$p;$javaDir", "Machine")
-                $env:Path = "$javaDir;$env:Path"
+    # Scan standard locations
+    $searchPaths = @(
+        "C:\Program Files\Eclipse Adoptium",
+        "C:\Program Files\Java",
+        "C:\Program Files (x86)\Java"
+    )
+    foreach ($sp in $searchPaths) {
+        if (Test-Path $sp) {
+            $javaExe = Get-ChildItem -Path $sp -Filter "java.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($javaExe) {
+                Add-ToSystemPath $javaExe.DirectoryName
+                $javaCmd = $javaExe
+                break
             }
-            $javaCmd = $javaExe
         }
     }
 }
 
 if ($javaCmd) {
-    Write-Host "[+] Java is installed: $($javaCmd.Source)" -ForegroundColor Green
+    Write-Host "[+] Java is installed and registered in PATH: $($javaCmd.Source ?? $javaCmd.FullName)" -ForegroundColor Green
 } else {
-    Write-Host "[*] Java not found. Installing Java JRE silently via Chocolatey..." -ForegroundColor Yellow
-    try {
-        if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-            $env:Path = "$env:ALLUSERSPROFILE\chocolatey\bin;$env:Path"
+    Write-Host "[*] Java not found. Searching for preloaded OpenJDK offline installer..." -ForegroundColor Yellow
+
+    # Search for OpenJDK MSI on media drive or any drive
+    $javaMsi = $null
+    if ($mediaDrive) {
+        $javaMsi = Get-ChildItem -Path $mediaDrive -Filter "*openjdk*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $javaMsi) {
+            $javaMsi = Get-ChildItem -Path $mediaDrive -Filter "*jre*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
         }
-        if (Get-Command choco.exe -ErrorAction SilentlyContinue) {
-            choco install -y javaruntime --no-progress
-            Write-Host "[+] Java JRE installed successfully!" -ForegroundColor Green
+    }
+
+    if (-not $javaMsi) {
+        foreach ($d in $allDrives) {
+            $javaMsi = Get-ChildItem -Path $d -Filter "*openjdk*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($javaMsi) { break }
         }
-    } catch {
-        Write-Host "[!] Note on Java installation: $_" -ForegroundColor DarkGray
+    }
+
+    if ($javaMsi) {
+        Write-Host "[*] Installing Adoptium OpenJDK JRE silently from $($javaMsi.FullName)..." -ForegroundColor Yellow
+        $p = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$($javaMsi.FullName)`" /qn ADDLOCAL=FeatureMain,FeatureJavaHome,FeatureJarFileRunWith,FeatureOracleJavaSoft /norestart" -Wait -PassThru
+        Write-Host "[+] OpenJDK MSI installer finished (ExitCode: $($p.ExitCode))" -ForegroundColor Green
+
+        # Register in PATH
+        $adoptiumExe = Get-ChildItem -Path "C:\Program Files\Eclipse Adoptium" -Filter "java.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($adoptiumExe) {
+            Add-ToSystemPath $adoptiumExe.DirectoryName
+            Write-Host "[+] Java registered in System PATH: $($adoptiumExe.FullName)" -ForegroundColor Green
+        }
+    } else {
+        # Check if internet is available before trying Chocolatey
+        $isOnline = $false
+        try {
+            $testConn = Test-NetConnection -ComputerName "8.8.8.8" -Port 53 -WarningAction SilentlyContinue
+            if ($testConn.TcpTestSucceeded) { $isOnline = $true }
+        } catch {}
+
+        if ($isOnline) {
+            Write-Host "[*] Internet detected. Installing Java via Chocolatey..." -ForegroundColor Yellow
+            try {
+                if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
+                    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+                    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+                    $env:Path = "$env:ALLUSERSPROFILE\chocolatey\bin;$env:Path"
+                }
+                if (Get-Command choco.exe -ErrorAction SilentlyContinue) {
+                    choco install -y javaruntime --no-progress
+                    Write-Host "[+] Java JRE installed successfully via Chocolatey!" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "[!] Chocolatey installation note: $_" -ForegroundColor DarkGray
+            }
+        } else {
+            Write-Host "[!] Offline mode: Java MSI installer not found on drive $mediaDrive" -ForegroundColor Yellow
+            Write-Host "    Ensure 'sudo ./enable-nonpe.sh' was run on the Ubuntu host to bake openjdk-installer.msi into Drive E:." -ForegroundColor Cyan
+        }
     }
 }
 
-# 4. Verify Final State
+# 5. Verify Final State
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "  VERIFICATION RESULTS" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
@@ -227,18 +341,20 @@ foreach ($p in $excelPaths) {
 }
 
 $wordOk = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE")
-$javaOk = [bool](Get-Command java.exe -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files\Java")
+$javaOk = [bool](Get-Command java.exe -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files\Eclipse Adoptium") -or (Test-Path "C:\Program Files\Java")
 $winrarOk = Test-Path "C:\Program Files\WinRAR\WinRAR.exe"
 $sevenzipOk = Test-Path "C:\Program Files\7-Zip\7z.exe"
+$sumatraOk = Test-Path "C:\Program Files\SumatraPDF\SumatraPDF.exe"
 
 Write-Host "  Microsoft Excel: $(if ($excelOk) { '[+] READY' } else { '[-] NOT FOUND' })" -ForegroundColor $(if ($excelOk) { 'Green' } else { 'Yellow' })
 Write-Host "  Microsoft Word:  $(if ($wordOk) { '[+] READY' } else { '[-] NOT FOUND' })" -ForegroundColor $(if ($wordOk) { 'Green' } else { 'Yellow' })
 Write-Host "  Java JRE:        $(if ($javaOk) { '[+] READY' } else { '[-] NOT FOUND' })" -ForegroundColor $(if ($javaOk) { 'Green' } else { 'Yellow' })
 Write-Host "  WinRAR:          $(if ($winrarOk) { '[+] READY' } else { '[-] NOT FOUND' })" -ForegroundColor $(if ($winrarOk) { 'Green' } else { 'Yellow' })
 Write-Host "  7-Zip:           $(if ($sevenzipOk) { '[+] READY' } else { '[-] NOT FOUND' })" -ForegroundColor $(if ($sevenzipOk) { 'Green' } else { 'Yellow' })
+Write-Host "  SumatraPDF:      $(if ($sumatraOk) { '[+] READY' } else { '[-] NOT FOUND' })" -ForegroundColor $(if ($sumatraOk) { 'Green' } else { 'Yellow' })
 Write-Host "============================================================" -ForegroundColor Cyan
 
-# 5. Ensure CAPE Agent is active on port 8000
+# 6. Ensure CAPE Agent is active on port 8000
 $agentActive = $false
 try {
     $res = Test-NetConnection -Port 8000 -ComputerName 127.0.0.1 -WarningAction SilentlyContinue
@@ -251,7 +367,18 @@ if ($agentActive) {
     Write-Host "[+] CAPE Agent is active and listening on port 8000!" -ForegroundColor Green
     Write-Host "[+] You can now run 'sudo ./enable-nonpe.sh' or 'sudo ./repair.sh' on Ubuntu to save the snapshot." -ForegroundColor Green
 } else {
-    Write-Host "[*] Restarting Windows VM to launch CAPE Agent cleanly..." -ForegroundColor Yellow
+    Write-Host "[*] Starting CAPEv2 Agent daemon in background..." -ForegroundColor Yellow
+    $pythonExe = "C:\Program Files\Python310\python.exe"
+    $pythonwExe = "C:\Program Files\Python310\pythonw.exe"
+    $startupAgent = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\agent.pyw"
+
+    if (Test-Path $startupAgent) {
+        if (Test-Path $pythonwExe) {
+            Start-Process -FilePath $pythonwExe -ArgumentList "`"$startupAgent`"" -WindowStyle Hidden
+        } elseif (Test-Path $pythonExe) {
+            Start-Process -FilePath $pythonExe -ArgumentList "`"$startupAgent`"" -WindowStyle Hidden
+        }
+    }
 }
 
 Stop-Transcript -ErrorAction SilentlyContinue

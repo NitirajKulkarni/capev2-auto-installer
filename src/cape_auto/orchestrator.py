@@ -2180,6 +2180,7 @@ WantedBy=multi-user.target
         pdf_installer = os.path.join(staging_dir, "sumatrapdf-installer.exe")
         winrar_installer = os.path.join(staging_dir, "winrar-installer.exe")
         vcredist_installer = os.path.join(staging_dir, "vcredist-installer.exe")
+        openjdk_installer = os.path.join(staging_dir, "openjdk-installer.msi")
 
         try:
             if not os.path.isfile(python_installer):
@@ -2222,6 +2223,25 @@ WantedBy=multi-user.target
             if os.path.isfile(vcredist_installer) and os.path.getsize(vcredist_installer) < 1000000:
                 try:
                     os.remove(vcredist_installer)
+                except OSError:
+                    pass
+
+            if not os.path.isfile(openjdk_installer) or os.path.getsize(openjdk_installer) < 10000000:
+                logger.info("Downloading Adoptium OpenJDK 8 JRE for offline Java (.jar) analysis...")
+                self._cmd.run([
+                    "curl", "-sSLf",
+                    "https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u412-b08/OpenJDK8U-jre_x64_windows_hotspot_8u412b08.msi",
+                    "-o", openjdk_installer
+                ], timeout=120)
+                if not os.path.isfile(openjdk_installer) or os.path.getsize(openjdk_installer) < 10000000:
+                    self._cmd.run([
+                        "curl", "-sSLf",
+                        "https://api.adoptium.net/v3/binary/latest/8/ga/windows/x64/jre/hotspot/normal/eclipse?project=jdk",
+                        "-o", openjdk_installer
+                    ], timeout=120)
+            if os.path.isfile(openjdk_installer) and os.path.getsize(openjdk_installer) < 10000000:
+                try:
+                    os.remove(openjdk_installer)
                 except OSError:
                     pass
         except Exception as e:
@@ -3234,6 +3254,47 @@ StartupNotify=true
             logger.info(f"Inserting updated ISO into CD-ROM device '{cdrom_target}' (drive E: in Windows)...")
             self._cmd.run(["virsh", "change-media", vm_name, cdrom_target, iso_path, "--update"], quiet=True)
             self._cmd.run(["virsh", "change-media", vm_name, cdrom_target, iso_path, "--insert"], quiet=True)
+
+        # ─── STEP 3B: Preload & Attach Microsoft Office Offline Media (Drive F:) ───
+        office_img = None
+        for cand in [
+            os.path.join(self._project_dir, "office-2019.iso"),
+            os.path.join(self._project_dir, "ProPlus2019Retail.img"),
+            os.path.join(self._project_dir, "office.iso"),
+            os.path.join(self._project_dir, "state", "office-2019.iso"),
+            os.path.join(self._project_dir, "state", "ProPlus2019Retail.img"),
+            os.path.join(self._project_dir, "state", "office.iso"),
+            "/var/lib/libvirt/images/office-2019.iso",
+            "/var/lib/libvirt/images/office-2019.img",
+            "/var/lib/libvirt/images/ProPlus2019Retail.img",
+            "/var/lib/libvirt/images/office.iso",
+        ]:
+            if os.path.isfile(cand) and os.path.getsize(cand) > 100000000:
+                office_img = cand
+                break
+
+        if not office_img:
+            target_img = "/var/lib/libvirt/images/office-2019.iso"
+            logger.info("Downloading official Microsoft Office 2019 offline installer directly from Microsoft CDN on Ubuntu host...")
+            logger.info("URL: https://officecdn.microsoft.com/db/492350f6-3a01-4f97-b9c0-c7c6ddf67d60/media/en-US/ProPlus2019Retail.img")
+            self._cmd.run([
+                "curl", "-sSLf", "-C", "-",
+                "https://officecdn.microsoft.com/db/492350f6-3a01-4f97-b9c0-c7c6ddf67d60/media/en-US/ProPlus2019Retail.img",
+                "-o", target_img
+            ], timeout=1200)
+            if os.path.isfile(target_img) and os.path.getsize(target_img) > 100000000:
+                office_img = target_img
+
+        if office_img:
+            logger.info(f"Attaching offline Microsoft Office installation media '{office_img}' to '{vm_name}' (Drive F: in Windows)...")
+            self._cmd.run([
+                "virsh", "attach-disk", vm_name, office_img, "sdc",
+                "--type", "cdrom", "--mode", "readonly", "--config"
+            ], quiet=True)
+            self._cmd.run([
+                "virsh", "attach-disk", vm_name, office_img, "sdc",
+                "--type", "cdrom", "--mode", "readonly"
+            ], quiet=True)
 
         # ─── STEP 4: Guide User & Poll for Agent Readiness ───────────────────
         logger.info("[4/5] Checking Windows guest agent readiness...")

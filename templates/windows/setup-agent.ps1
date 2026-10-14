@@ -141,6 +141,20 @@ if ($vcInst) {
     Start-Process -FilePath $vcInst.FullName -ArgumentList "/quiet /norestart" -Wait
 }
 
+# Adoptium OpenJDK JRE (fixes .jar analysis and jar.py package)
+$javaMsi = Get-ChildItem -Path $isoDrive -Filter "*openjdk*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $javaMsi) {
+    $javaMsi = Get-ChildItem -Path $isoDrive -Filter "*jre*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if ($javaMsi) {
+    Write-Output "[*] Installing Adoptium OpenJDK JRE silently from $($javaMsi.Name)..."
+    Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$($javaMsi.FullName)`" /qn ADDLOCAL=FeatureMain,FeatureJavaHome,FeatureJarFileRunWith,FeatureOracleJavaSoft /norestart" -Wait
+    $adoptiumDir = Get-ChildItem -Path "C:\Program Files\Eclipse Adoptium" -Filter "java.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($adoptiumDir) {
+        Add-ToPath $adoptiumDir.DirectoryName
+    }
+}
+
 # Office Macro & Protected View Security Bypass
 try {
     foreach ($ver in @("16.0", "15.0", "14.0")) {
