@@ -176,7 +176,7 @@ Every stage is atomic, deterministic, and persisted in `state/manifest.json`:
  [5] KVM                Verify/install KVM and load hardware virtualization modules
  [6] LIBVIRT            Configure libvirtd/virtqemud daemons, groups & sockets
  [7] REBOOT_CHECK       Evaluate whether kernel update requires host reboot
- [8] CAPE_REPOSITORY    Clone or update KevReilly/CAPEv2 repository
+ [8] CAPE_REPOSITORY    Clone or update KevoReilly/CAPEv2 repository
  [9] CAPE_DEPENDENCIES  Install system libraries (yara, tcpdump, libmagic, libssl)
 [10] CAPE_INSTALL       Setup isolated Python 3.12 environment (uv / poetry)
 [11] CAPE_CONFIG        Generate customized cuckoo.conf, kvm.conf, and routing.conf
