@@ -316,6 +316,9 @@ enabled = false
         self.assertIn("192.168.250.100", content)
         self.assertIn("ExecutionPolicy Bypass", content)
         self.assertIn("7-Zip", content)
+        self.assertIn("WinRAR", content)
+        self.assertIn("VBAWarnings", content)
+        self.assertIn("Chocolatey", content)
         self.assertIn("agent.pyw", content)
 
     def test_enable_nonpe_orchestrator_execution(self):

@@ -98,6 +98,69 @@ Write-Output "[*] Installing official CAPEv2 Agent to Startup folder..."
 $startupDir = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
 Copy-Item -Path $agentSource -Destination (Join-Path $startupDir "agent.pyw") -Force
 
+# 10. Install Non-PE software suites from Answer Disc (OEMDRV)
+function Add-ToPath {
+    param([string]$Dir)
+    if (Test-Path $Dir) {
+        $p = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($p -notlike "*$Dir*") {
+            [Environment]::SetEnvironmentVariable("Path", "$p;$Dir", "Machine")
+            $env:Path = "$Dir;$env:Path"
+        }
+    }
+}
+
+# WinRAR (CRITICAL: fixes .rar analysis and rar.py package)
+$winrarInst = Get-ChildItem -Path $isoDrive -Filter "*winrar*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($winrarInst) {
+    Write-Output "[*] Installing WinRAR 64-bit silently..."
+    Start-Process -FilePath $winrarInst.FullName -ArgumentList "/S" -Wait
+    Add-ToPath "C:\Program Files\WinRAR"
+}
+
+# 7-Zip (fixes .zip, .7z, .iso, .tar)
+$sevenZipInst = Get-ChildItem -Path $isoDrive -Filter "7z*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($sevenZipInst) {
+    Write-Output "[*] Installing 7-Zip silently..."
+    Start-Process -FilePath $sevenZipInst.FullName -ArgumentList "/S" -Wait
+    Add-ToPath "C:\Program Files\7-Zip"
+}
+
+# SumatraPDF (fixes .pdf)
+$pdfInst = Get-ChildItem -Path $isoDrive -Filter "*SumatraPDF*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($pdfInst) {
+    Write-Output "[*] Installing SumatraPDF silently..."
+    Start-Process -FilePath $pdfInst.FullName -ArgumentList "-s -all-users" -Wait
+    Add-ToPath "C:\Program Files\SumatraPDF"
+}
+
+# Visual C++ Redistributable (2015-2022)
+$vcInst = Get-ChildItem -Path $isoDrive -Filter "*vcredist*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($vcInst) {
+    Write-Output "[*] Installing Visual C++ Redistributable (2015-2022)..."
+    Start-Process -FilePath $vcInst.FullName -ArgumentList "/quiet /norestart" -Wait
+}
+
+# Office Macro & Protected View Security Bypass
+try {
+    foreach ($ver in @("16.0", "15.0", "14.0")) {
+        foreach ($app in @("Word", "Excel", "PowerPoint", "Access")) {
+            $sec = "HKCU:\Software\Microsoft\Office\$ver\$app\Security"
+            New-Item -Path $sec -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $sec -Name "VBAWarnings" -Value 1 -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $sec -Name "AccessVBOM" -Value 1 -Force -ErrorAction SilentlyContinue
+            $pv = "$sec\ProtectedView"
+            New-Item -Path $pv -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $pv -Name "DisableInternetFilesInPV" -Value 1 -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $pv -Name "DisableUnsafeLocationsInPV" -Value 1 -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $pv -Name "DisableAttachementsInPV" -Value 1 -Force -ErrorAction SilentlyContinue
+        }
+        $xlSec = "HKCU:\Software\Microsoft\Office\$ver\Excel\Security"
+        New-Item -Path $xlSec -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path $xlSec -Name "XL4Macros" -Value 1 -Force -ErrorAction SilentlyContinue
+    }
+} catch {}
+
 Write-Output "[*] Allowing Python through Windows Firewall..."
 netsh advfirewall firewall add rule name="CAPE-Agent-Python" dir=in action=allow program="C:\Program Files\Python310\python.exe" enable=yes | Out-Null
 netsh advfirewall firewall add rule name="CAPE-Agent-Port" dir=in action=allow protocol=TCP localport=8000 | Out-Null

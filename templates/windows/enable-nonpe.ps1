@@ -1,5 +1,9 @@
 # CAPEv2 Windows Guest Non-PE Environment Enabler & Baseline Preparation
-# Configures Windows guest to analyze all Non-PE formats (PowerShell, Batch, VBS, JS, PDF, Office, Archives)
+# Configures Windows guest to analyze all Non-PE formats:
+# - Archives (.rar, .zip, .7z, .iso, .tar) via WinRAR and 7-Zip
+# - Documents (.pdf, .doc, .docx, .xls, .xlsx, .ppt, .pptx) via SumatraPDF & MS Office
+# - Scripts (.ps1, .vbs, .js, .wsf, .bat, .cmd, .hta) via Bypass policies & WSH
+# - Interpreters & Runtimes (Java JRE, Node.js, AutoIt3, VC++ 2015-2022)
 # and starts the CAPE Agent daemon on port 8000.
 
 $ErrorActionPreference = "Continue"
@@ -71,9 +75,9 @@ try {
     reg add "HKLM\SOFTWARE\Microsoft\Windows Script Host\Settings" /v "Enabled" /t REG_DWORD /d 1 /f | Out-Null
     reg add "HKCU\SOFTWARE\Microsoft\Windows Script Host\Settings" /v "Enabled" /t REG_DWORD /d 1 /f | Out-Null
 
-    # Disable Open File Security Warnings for downloaded scripts
+    # Disable Open File Security Warnings for downloaded scripts and archives
     reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Associations" /v "DefaultFileTypeRisk" /t REG_DWORD /d 1806 /f | Out-Null
-    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Associations" /v "LowRiskFileTypes" /t REG_SZ /d ".exe;.bat;.cmd;.ps1;.vbs;.js;.wsf;.hta;.pdf;.zip;.rar;.7z;" /f | Out-Null
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Associations" /v "LowRiskFileTypes" /t REG_SZ /d ".exe;.bat;.cmd;.ps1;.vbs;.js;.wsf;.hta;.pdf;.zip;.rar;.7z;.iso;.tar;.gz;.jar;.au3;.py;.pyw;.doc;.docx;.xls;.xlsx;.ppt;.pptx;" /f | Out-Null
 } catch {
     Write-Host "[!] Note on Script ExecutionPolicy: $_" -ForegroundColor DarkGray
 }
@@ -113,24 +117,56 @@ if ($mediaDrive) {
     $mediaDrive = "C:\"
 }
 
-# 8. Install 7-Zip silently (for Archive extraction: .zip, .rar, .7z, .iso)
+# Helper function to append to System Machine PATH
+function Add-ToSystemPath {
+    param([string]$Dir)
+    if (Test-Path $Dir) {
+        $curr = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($curr -notlike "*$Dir*") {
+            [Environment]::SetEnvironmentVariable("Path", "$curr;$Dir", "Machine")
+            $env:Path = "$Dir;$env:Path"
+            Write-Host "[+] Added '$Dir' to System PATH" -ForegroundColor Green
+        }
+    }
+}
+
+# 9. Install WinRAR silently (CRITICAL: fixes .rar analysis and rar.py package)
+$winrarInstaller = Get-ChildItem -Path $mediaDrive -Filter "*winrar*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $winrarInstaller) {
+    $winrarInstaller = Get-ChildItem -Path $mediaDrive -Filter "*rar*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+
+if ($winrarInstaller) {
+    Write-Host "[*] Installing WinRAR 64-bit silently from $($winrarInstaller.FullName)..." -ForegroundColor Yellow
+    $p = Start-Process -FilePath $winrarInstaller.FullName -ArgumentList "/S" -Wait -PassThru
+    if ($p.ExitCode -eq 0 -or (Test-Path "C:\Program Files\WinRAR\WinRAR.exe")) {
+        Write-Host "[+] WinRAR installed successfully at C:\Program Files\WinRAR\WinRAR.exe" -ForegroundColor Green
+        Add-ToSystemPath "C:\Program Files\WinRAR"
+    }
+} elseif (Test-Path "C:\Program Files\WinRAR\WinRAR.exe") {
+    Write-Host "[+] WinRAR is already present at C:\Program Files\WinRAR\WinRAR.exe" -ForegroundColor Green
+    Add-ToSystemPath "C:\Program Files\WinRAR"
+} else {
+    Write-Host "[!] WinRAR installer not found on media drive. Will attempt online package install." -ForegroundColor DarkGray
+}
+
+# 10. Install 7-Zip silently (for Archive extraction: .zip, .7z, .iso, .tar)
 $sevenZipInstaller = Get-ChildItem -Path $mediaDrive -Filter "7z*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($sevenZipInstaller) {
     Write-Host "[*] Installing 7-Zip silently from $($sevenZipInstaller.FullName)..." -ForegroundColor Yellow
     $p = Start-Process -FilePath $sevenZipInstaller.FullName -ArgumentList "/S" -Wait -PassThru
     if ($p.ExitCode -eq 0 -or (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
         Write-Host "[+] 7-Zip installed successfully at C:\Program Files\7-Zip\7z.exe" -ForegroundColor Green
-        # Add to System PATH
-        $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-        if ($currentPath -notlike "*7-Zip*") {
-            [Environment]::SetEnvironmentVariable("Path", "$currentPath;C:\Program Files\7-Zip", "Machine")
-        }
+        Add-ToSystemPath "C:\Program Files\7-Zip"
     }
+} elseif (Test-Path "C:\Program Files\7-Zip\7z.exe") {
+    Write-Host "[+] 7-Zip is already present at C:\Program Files\7-Zip\7z.exe" -ForegroundColor Green
+    Add-ToSystemPath "C:\Program Files\7-Zip"
 } else {
     Write-Host "[!] 7-Zip installer not found on media drive. Skipping 7-Zip." -ForegroundColor DarkGray
 }
 
-# 9. Install PDF Reader silently (for PDF analysis: .pdf)
+# 11. Install PDF Reader silently (for PDF analysis: .pdf)
 $pdfInstaller = Get-ChildItem -Path $mediaDrive -Filter "*SumatraPDF*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $pdfInstaller) {
     $pdfInstaller = Get-ChildItem -Path $mediaDrive -Filter "*pdf*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -141,16 +177,32 @@ if ($pdfInstaller -and (Get-Item $pdfInstaller.FullName).Length -gt 1048576) {
         Write-Host "[*] Installing PDF Reader silently from $($pdfInstaller.FullName)..." -ForegroundColor Yellow
         $p = Start-Process -FilePath $pdfInstaller.FullName -ArgumentList "-s -all-users" -Wait -PassThru
         if ($p.ExitCode -eq 0) {
-            Write-Host "[+] PDF Reader installed successfully!" -ForegroundColor Green
+            Write-Host "[+] SumatraPDF installed successfully!" -ForegroundColor Green
+            Add-ToSystemPath "C:\Program Files\SumatraPDF"
         }
     } catch {
         Write-Host "[!] Note on PDF installer execution: $_" -ForegroundColor DarkGray
     }
+} elseif (Test-Path "C:\Program Files\SumatraPDF\SumatraPDF.exe") {
+    Write-Host "[+] SumatraPDF is already present." -ForegroundColor Green
+    Add-ToSystemPath "C:\Program Files\SumatraPDF"
 } else {
-    Write-Host "[*] Using Windows default PDF handler (Edge)..." -ForegroundColor Yellow
+    Write-Host "[*] SumatraPDF not found on media. Using Windows default PDF handler (Edge)..." -ForegroundColor Yellow
 }
 
-# 10. Install Python 3.10 if not already present
+# 12. Install Visual C++ 2015-2022 Redistributable (fixes missing MSVCR/VCRUNTIME DLLs)
+$vcInstaller = Get-ChildItem -Path $mediaDrive -Filter "*vcredist*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $vcInstaller) {
+    $vcInstaller = Get-ChildItem -Path $mediaDrive -Filter "*vc_redist*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+
+if ($vcInstaller) {
+    Write-Host "[*] Installing Visual C++ Redistributable (2015-2022)..." -ForegroundColor Yellow
+    Start-Process -FilePath $vcInstaller.FullName -ArgumentList "/quiet /norestart" -Wait
+    Write-Host "[+] Visual C++ Redistributable installed." -ForegroundColor Green
+}
+
+# 13. Install Python 3.10 if not already present
 $pythonExe = "C:\Program Files\Python310\python.exe"
 $pythonwExe = "C:\Program Files\Python310\pythonw.exe"
 if (-not (Test-Path $pythonExe)) {
@@ -161,8 +213,84 @@ if (-not (Test-Path $pythonExe)) {
         Write-Host "[+] Python 3.10 installation finished (ExitCode: $($p.ExitCode))" -ForegroundColor Green
     }
 }
+Add-ToSystemPath "C:\Program Files\Python310"
+Add-ToSystemPath "C:\Program Files\Python310\Scripts"
 
-# 11. Deploy and Start CAPEv2 Agent
+# 14. Online Bulk Package Manager (Chocolatey) - Automated Bulk Non-PE Enabler
+$isOnline = $false
+try {
+    $testConn = Test-NetConnection -ComputerName "8.8.8.8" -Port 53 -WarningAction SilentlyContinue
+    if ($testConn.TcpTestSucceeded) {
+        $isOnline = $true
+    }
+} catch {}
+
+if ($isOnline) {
+    Write-Host "[*] Internet connection detected. Checking Chocolatey bulk package manager..." -ForegroundColor Yellow
+    try {
+        if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
+            Write-Host "[*] Bootstrapping Chocolatey silently..." -ForegroundColor Yellow
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+            $env:Path = "$env:ALLUSERSPROFILE\chocolatey\bin;$env:Path"
+        }
+        
+        if (Get-Command choco.exe -ErrorAction SilentlyContinue) {
+            Write-Host "[*] Ensuring all Non-PE software suites are installed via Chocolatey..." -ForegroundColor Yellow
+            choco install -y winrar 7zip sumatrapdf javaruntime vcredist-all --no-progress --ignore-checksums
+            Add-ToSystemPath "C:\Program Files\WinRAR"
+            Add-ToSystemPath "C:\Program Files\7-Zip"
+            Add-ToSystemPath "C:\Program Files\SumatraPDF"
+            Write-Host "[+] Chocolatey Non-PE dependencies verified!" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[!] Note on Chocolatey execution: $_" -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "[*] Offline mode: Skipping online Chocolatey package installer." -ForegroundColor DarkGray
+}
+
+# 15. Microsoft Office Macro & Protected View Security Bypass
+# Applies essential registry keys across Office versions to ensure malicious macros detonate
+Write-Host "[*] Applying Microsoft Office Macro & Protected View Security Bypass..." -ForegroundColor Yellow
+try {
+    $officeVersions = @("16.0", "15.0", "14.0", "12.0")
+    $officeApps = @("Word", "Excel", "PowerPoint", "Access")
+
+    foreach ($ver in $officeVersions) {
+        foreach ($app in $officeApps) {
+            $secPath = "HKCU:\Software\Microsoft\Office\$ver\$app\Security"
+            if (-not (Test-Path $secPath)) {
+                New-Item -Path $secPath -Force | Out-Null
+            }
+            # VBAWarnings = 1: Enable all macros without notification
+            Set-ItemProperty -Path $secPath -Name "VBAWarnings" -Value 1 -Force -ErrorAction SilentlyContinue
+            # AccessVBOM = 1: Trust access to the VBA project object model
+            Set-ItemProperty -Path $secPath -Name "AccessVBOM" -Value 1 -Force -ErrorAction SilentlyContinue
+
+            # Disable Protected View across all sources
+            $pvPath = "$secPath\ProtectedView"
+            if (-not (Test-Path $pvPath)) {
+                New-Item -Path $pvPath -Force | Out-Null
+            }
+            Set-ItemProperty -Path $pvPath -Name "DisableInternetFilesInPV" -Value 1 -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $pvPath -Name "DisableUnsafeLocationsInPV" -Value 1 -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $pvPath -Name "DisableAttachementsInPV" -Value 1 -Force -ErrorAction SilentlyContinue
+        }
+
+        # Excel 4.0 (XLM) Macro bypass
+        $excelSecurity = "HKCU:\Software\Microsoft\Office\$ver\Excel\Security"
+        if (-not (Test-Path $excelSecurity)) {
+            New-Item -Path $excelSecurity -Force | Out-Null
+        }
+        Set-ItemProperty -Path $excelSecurity -Name "XL4Macros" -Value 1 -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "[+] Office Macro and Protected View bypasses configured." -ForegroundColor Green
+} catch {
+    Write-Host "[!] Note on Office security settings: $_" -ForegroundColor DarkGray
+}
+
+# 16. Deploy and Start CAPEv2 Agent
 $agentSource = Join-Path $mediaDrive "agent.pyw"
 $startupDir = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
 $targetAgent = Join-Path $startupDir "agent.pyw"

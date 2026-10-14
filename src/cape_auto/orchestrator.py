@@ -2176,6 +2176,8 @@ WantedBy=multi-user.target
         agent_py = os.path.join(staging_dir, "agent.pyw")
         sevenzip_installer = os.path.join(staging_dir, "7z-installer.exe")
         pdf_installer = os.path.join(staging_dir, "sumatrapdf-installer.exe")
+        winrar_installer = os.path.join(staging_dir, "winrar-installer.exe")
+        vcredist_installer = os.path.join(staging_dir, "vcredist-installer.exe")
 
         try:
             if not os.path.isfile(python_installer):
@@ -2190,6 +2192,17 @@ WantedBy=multi-user.target
                 logger.info("Downloading 7-Zip silent installer for archive analysis...")
                 self._cmd.run(["curl", "-sL", "https://www.7-zip.org/a/7z2408-x64.exe", "-o", sevenzip_installer], timeout=60)
 
+            if not os.path.isfile(winrar_installer) or os.path.getsize(winrar_installer) < 1000000:
+                logger.info("Downloading WinRAR silent installer for RAR archive analysis...")
+                self._cmd.run(["curl", "-sSLf", "https://www.rarlab.com/rar/winrar-x64-701.exe", "-o", winrar_installer], timeout=60)
+                if not os.path.isfile(winrar_installer) or os.path.getsize(winrar_installer) < 1000000:
+                    self._cmd.run(["curl", "-sSLf", "https://www.win-rar.com/fileadmin/winrar-versions/winrar/winrar-x64-701.exe", "-o", winrar_installer], timeout=60)
+            if os.path.isfile(winrar_installer) and os.path.getsize(winrar_installer) < 1000000:
+                try:
+                    os.remove(winrar_installer)
+                except OSError:
+                    pass
+
             if not os.path.isfile(pdf_installer) or os.path.getsize(pdf_installer) < 1000000:
                 logger.info("Downloading SumatraPDF installer for PDF analysis...")
                 self._cmd.run(["curl", "-sSLf", "https://www.sumatrapdfreader.org/dl/rel/3.5.2/SumatraPDF-3.5.2-64-install.exe", "-o", pdf_installer], timeout=60)
@@ -2198,6 +2211,15 @@ WantedBy=multi-user.target
             if os.path.isfile(pdf_installer) and os.path.getsize(pdf_installer) < 1000000:
                 try:
                     os.remove(pdf_installer)
+                except OSError:
+                    pass
+
+            if not os.path.isfile(vcredist_installer) or os.path.getsize(vcredist_installer) < 1000000:
+                logger.info("Downloading Visual C++ Redistributable (2015-2022) for malware runtimes...")
+                self._cmd.run(["curl", "-sSLf", "https://aka.ms/vs/17/release/vc_redist.x64.exe", "-o", vcredist_installer], timeout=60)
+            if os.path.isfile(vcredist_installer) and os.path.getsize(vcredist_installer) < 1000000:
+                try:
+                    os.remove(vcredist_installer)
                 except OSError:
                     pass
         except Exception as e:
@@ -3218,10 +3240,13 @@ StartupNotify=true
         print("    powershell -ep bypass -f E:\\enable-nonpe.ps1")
         print("    (or navigate to Drive E: in Explorer and right-click -> Run with PowerShell)")
         print("\n  This script will automatically:")
-        print("    - Install 7-Zip silently for archive extraction (.zip, .rar, .7z, .iso)")
-        print("    - Install SumatraPDF silently for PDF analysis (.pdf)")
-        print("    - Enable PowerShell ExecutionPolicy Bypass (.ps1)")
-        print("    - Enable Windows Script Host (.vbs, .js, .wsf) and Batch (.bat, .cmd)")
+        print("    - Install WinRAR 64-bit silently for RAR archive analysis (.rar, .rev)")
+        print("    - Install 7-Zip silently for archive extraction (.zip, .7z, .iso, .tar)")
+        print("    - Install SumatraPDF silently for PDF document analysis (.pdf)")
+        print("    - Install Visual C++ Redistributable 2015-2022 for malware runtime DLLs")
+        print("    - Configure Microsoft Office Macro & Protected View bypass (Excel, Word, PPT)")
+        print("    - Enable PowerShell ExecutionPolicy Bypass (.ps1) and WSH (.vbs, .js, .wsf)")
+        print("    - Bootstrap Chocolatey for automated bulk software package installs")
         print("    - Disable Defender real-time scanning & UAC")
         print("    - Launch the CAPE agent daemon listening on port 8000")
         print("=" * 78 + "\n")
