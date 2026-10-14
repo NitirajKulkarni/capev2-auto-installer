@@ -321,6 +321,16 @@ enabled = false
         self.assertIn("Chocolatey", content)
         self.assertIn("agent.pyw", content)
 
+    def test_install_office_script_template(self):
+        from pathlib import Path
+        template_path = os.path.join(os.path.dirname(__file__), "..", "templates", "windows", "install-office.ps1")
+        self.assertTrue(os.path.isfile(template_path))
+        content = Path(template_path).read_text(encoding="utf-8")
+        self.assertIn("officedeploymenttool", content)
+        self.assertIn("EXCEL.EXE", content)
+        self.assertIn("VBAWarnings", content)
+        self.assertIn("javaruntime", content)
+
     def test_enable_nonpe_orchestrator_execution(self):
         from unittest.mock import MagicMock, patch
         from cape_auto.command import CommandResult

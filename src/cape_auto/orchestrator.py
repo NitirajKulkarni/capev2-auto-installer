@@ -2166,10 +2166,12 @@ WantedBy=multi-user.target
         template_xml = os.path.join(self._project_dir, "templates", "windows", "autounattend.xml")
         template_ps1 = os.path.join(self._project_dir, "templates", "windows", "setup-agent.ps1")
         template_nonpe = os.path.join(self._project_dir, "templates", "windows", "enable-nonpe.ps1")
+        template_office = os.path.join(self._project_dir, "templates", "windows", "install-office.ps1")
 
         target_xml = os.path.join(staging_dir, "Autounattend.xml")
         target_ps1 = os.path.join(staging_dir, "setup-agent.ps1")
         target_nonpe = os.path.join(staging_dir, "enable-nonpe.ps1")
+        target_office = os.path.join(staging_dir, "install-office.ps1")
         
         # Download Python 3.10 and CAPE agent into the staging dir so they are baked into the ISO
         python_installer = os.path.join(staging_dir, "python-installer.exe")
@@ -2240,6 +2242,11 @@ WantedBy=multi-user.target
             shutil.copy2(template_nonpe, target_nonpe)
         else:
             logger.warning(f"Non-PE script template {template_nonpe} not found")
+
+        if os.path.isfile(template_office):
+            shutil.copy2(template_office, target_office)
+        else:
+            logger.warning(f"Office script template {template_office} not found")
 
         iso_dir = "/var/lib/libvirt/images"
         if not os.path.isdir(iso_dir):
@@ -3237,8 +3244,10 @@ StartupNotify=true
         print("=" * 78)
         print("  All required non-PE files are now accessible on Windows Drive E: (OEMDRV)!")
         print("\n  Inside the Windows Guest (Administrator PowerShell):")
-        print("    powershell -ep bypass -f E:\\enable-nonpe.ps1")
-        print("    (or navigate to Drive E: in Explorer and right-click -> Run with PowerShell)")
+        print("    [1] Enable base tools (WinRAR, 7-Zip, SumatraPDF, VC++, WSH, Defender/UAC bypass):")
+        print("        powershell -ep bypass -f E:\\enable-nonpe.ps1")
+        print("\n    [2] Install Microsoft Office (Word, Excel, PowerPoint) and Java JRE:")
+        print("        powershell -ep bypass -f E:\\install-office.ps1")
         print("\n  This script will automatically:")
         print("    - Install WinRAR 64-bit silently for RAR archive analysis (.rar, .rev)")
         print("    - Install 7-Zip silently for archive extraction (.zip, .7z, .iso, .tar)")
