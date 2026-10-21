@@ -75,6 +75,12 @@ Examples:
                            help="Update existing CAPEv2 installation")
     mode_group.add_argument("--enable-nonpe", "--configure-nonpe", action="store_true",
                            help="Configure Non-PE analysis environment, update drive E: media, and save baseline snapshot")
+    mode_group.add_argument("--enable-ui-delete", action="store_true",
+                           help="Enable analysis deletion button directly in the CAPEv2 Web UI")
+    mode_group.add_argument("--disable-ui-delete", action="store_true",
+                           help="Disable analysis deletion button in the CAPEv2 Web UI")
+    mode_group.add_argument("--ui-delete-status", action="store_true",
+                           help="Check if Web UI delete button is enabled or disabled")
 
     parser.add_argument("--non-interactive", action="store_true",
                        help="Suppress interactive prompts")
@@ -172,6 +178,14 @@ def main() -> int:
             return orchestrator.update()
         elif args.enable_nonpe:
             return 0 if orchestrator.enable_nonpe() else 1
+        elif args.enable_ui_delete:
+            return 0 if orchestrator.enable_ui_delete() else 1
+        elif args.disable_ui_delete:
+            return 0 if orchestrator.disable_ui_delete() else 1
+        elif args.ui_delete_status:
+            status = orchestrator.get_ui_delete_status()
+            print(f"[*] CAPEv2 Web UI Delete Button: {'ENABLED' if status else 'DISABLED'}")
+            return 0
         elif args.from_stage:
             return orchestrator.install(from_stage=args.from_stage)
         elif args.reset_failed:

@@ -116,6 +116,104 @@ run_cleaner() {
     sudo -u "$CAPE_USER" env PYTHONPATH="$CAPE_ROOT" "$PYTHON_BIN" "$CLEANER_SCRIPT" "$@"
 }
 
+set_ui_delete() {
+    local enabled="$1"
+    local val_str="yes"
+    if [[ "$enabled" != "true" && "$enabled" != "yes" ]]; then
+        val_str="no"
+    fi
+
+    echo "[*] Setting Web UI delete option to '${val_str}'..."
+    python3 -c "
+import os, sys, re
+
+cape_root = '${CAPE_ROOT}'
+val = '${val_str}'
+
+targets = [
+    (os.path.join(cape_root, 'conf', 'web.conf'), 'delete', 'enabled', val),
+    (os.path.join(cape_root, 'custom', 'conf', 'web.conf'), 'delete', 'enabled', val),
+    (os.path.join(cape_root, 'conf', 'api.conf'), 'taskdelete', 'enabled', val),
+    (os.path.join(cape_root, 'custom', 'conf', 'api.conf'), 'taskdelete', 'enabled', val),
+]
+
+def update_file(filepath, section, key, value):
+    if not os.path.isfile(filepath):
+        parent = os.path.dirname(filepath)
+        if not os.path.isdir(parent):
+            return False
+        content = f'[{section}]\n{key} = {value}\n'
+    else:
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        except Exception as e:
+            print(f'[-] Error reading {filepath}: {e}')
+            return False
+        sec_pattern = re.compile(rf'(^\[{re.escape(section)}\].*?)(?=^\[|\Z)', re.M | re.S)
+        m = sec_pattern.search(content)
+        if not m:
+            content = content.rstrip() + f'\n\n[{section}]\n{key} = {value}\n'
+        else:
+            sec_block = m.group(1)
+            key_pattern = re.compile(rf'^[#;\s]*{re.escape(key)}\s*=.*$', re.M)
+            if key_pattern.search(sec_block):
+                new_sec = key_pattern.sub(f'{key} = {value}', sec_block, count=1)
+            else:
+                new_sec = sec_block.rstrip() + f'\n{key} = {value}\n'
+            content = content[:m.start()] + new_sec + content[m.end():]
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return True
+    except Exception as e:
+        print(f'[-] Error writing {filepath}: {e}')
+        return False
+
+for fpath, sec, k, v in targets:
+    if update_file(fpath, sec, k, v):
+        print(f'[+] Updated {fpath} -> [{sec}] {k} = {v}')
+"
+    chown -R "${CAPE_USER}:${CAPE_USER}" "${CAPE_ROOT}/custom" "${CAPE_ROOT}/conf" 2>/dev/null || true
+
+    echo "[*] Restarting cape-web service..."
+    if systemctl restart cape-web 2>/dev/null; then
+        echo "[+] cape-web service restarted successfully."
+        if [[ "$val_str" == "yes" ]]; then
+            echo "[+] Web UI Delete Button is now ENABLED! Refresh your browser on http://<ip>:8000/analysis/<id>/"
+        else
+            echo "[+] Web UI Delete Button is now DISABLED."
+        fi
+    else
+        echo "[!] Warning: could not restart cape-web service via systemctl."
+    fi
+}
+
+check_ui_delete_status() {
+    python3 -c "
+import os, re
+
+cape_root = '${CAPE_ROOT}'
+paths = [
+    os.path.join(cape_root, 'custom', 'conf', 'web.conf'),
+    os.path.join(cape_root, 'conf', 'web.conf'),
+]
+status = 'DISABLED (default)'
+for p in paths:
+    if os.path.isfile(p):
+        try:
+            with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+                c = f.read()
+            m = re.search(r'^\[delete\].*?(?=^\[|\Z)', c, re.M | re.S)
+            if m and re.search(r'^\s*enabled\s*=\s*(yes|true|1)', m.group(0), re.M | re.I):
+                status = f'ENABLED (configured in {p})'
+                break
+        except Exception:
+            pass
+print(f'[*] CAPEv2 Web UI Delete Button status: {status}')
+"
+}
+
 show_help() {
     cat <<EOF
 CAPEv2 Analysis Cleanup Helper
@@ -127,6 +225,13 @@ Options:
                       MongoDB records, and reset task counter to 1.
                       (Safely stops and restarts CAPE services during wipe)
                       Pass -y to bypass confirmation: sudo $0 --all -y
+
+  --enable-ui-delete  Enable task deletion button directly in the CAPEv2 Web UI.
+                      (Updates web.conf & api.conf, restarts cape-web)
+
+  --disable-ui-delete Disable task deletion button in the CAPEv2 Web UI.
+
+  --ui-delete-status  Check whether Web UI delete button is currently enabled.
 
   --days <N>          Delete all analysis tasks older than <N> days.
                       Example: sudo $0 --days 14
@@ -232,6 +337,18 @@ case "$1" in
         echo "[*] Cleaning Suricata logs..."
         run_cleaner --suricata
         echo "[+] Done."
+        ;;
+
+    --enable-ui-delete|-enable-ui-delete|--enable-web-delete|-enable-web-delete)
+        set_ui_delete true
+        ;;
+
+    --disable-ui-delete|-disable-ui-delete|--disable-web-delete|-disable-web-delete)
+        set_ui_delete false
+        ;;
+
+    --ui-delete-status|-ui-delete-status|--web-delete-status|-web-delete-status)
+        check_ui_delete_status
         ;;
 
     *)

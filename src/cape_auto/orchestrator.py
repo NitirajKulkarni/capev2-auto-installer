@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import re
 from cape_auto.config import Config
 from cape_auto.command import CommandRunner
 from cape_auto.state import (
@@ -1710,6 +1711,10 @@ drop = off
         routing_path = os.path.join(custom_dir, "routing.conf")
         with open(routing_path, "w") as f:
             f.write(routing_conf)
+
+        # Configure Web UI delete button if enabled
+        if self._config.get_bool("web.enable_ui_delete", True):
+            self.set_ui_delete(enabled=True, restart_service=False)
 
         # Fix ownership
         cape_user = self._config.get_str("installation.cape_user", "cape")
@@ -3410,4 +3415,101 @@ StartupNotify=true
         print("=" * 78 + "\n")
 
         return True
+
+    def get_ui_delete_status(self) -> bool:
+        """Check if Web UI delete button is enabled in CAPEv2 web.conf."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        conf_paths = [
+            os.path.join(cape_root, "custom", "conf", "web.conf"),
+            os.path.join(cape_root, "conf", "web.conf"),
+        ]
+        for path in conf_paths:
+            if os.path.isfile(path):
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    m = re.search(r"^\[delete\].*?(?=^\[|\Z)", content, re.M | re.S)
+                    if m:
+                        km = re.search(r"^\s*enabled\s*=\s*(yes|true|1)", m.group(0), re.M | re.I)
+                        if km:
+                            return True
+                except Exception:
+                    pass
+        return False
+
+    def set_ui_delete(self, enabled: bool = True, restart_service: bool = True) -> bool:
+        """Enable or disable task deletion in the CAPEv2 Web UI and API."""
+        cape_root = self._config.get_str("installation.cape_root", "/opt/CAPEv2")
+        cape_user = self._config.get_str("installation.cape_user", "cape")
+        val_str = "yes" if enabled else "no"
+
+        target_confs = [
+            (os.path.join(cape_root, "conf", "web.conf"), "delete", "enabled", val_str),
+            (os.path.join(cape_root, "custom", "conf", "web.conf"), "delete", "enabled", val_str),
+            (os.path.join(cape_root, "conf", "api.conf"), "taskdelete", "enabled", val_str),
+            (os.path.join(cape_root, "custom", "conf", "api.conf"), "taskdelete", "enabled", val_str),
+        ]
+
+        def _update_file(filepath: str, section: str, key: str, value: str) -> bool:
+            if not os.path.isfile(filepath):
+                parent = os.path.dirname(filepath)
+                if not os.path.isdir(parent):
+                    return False
+                content = f"[{section}]\n{key} = {value}\n"
+            else:
+                try:
+                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                except Exception as e:
+                    logger.error(f"Failed to read {filepath}: {e}")
+                    return False
+
+                sec_pattern = re.compile(rf"(^\[{re.escape(section)}\].*?)(?=^\[|\Z)", re.M | re.S)
+                m = sec_pattern.search(content)
+                if not m:
+                    content = content.rstrip() + f"\n\n[{section}]\n{key} = {value}\n"
+                else:
+                    sec_block = m.group(1)
+                    key_pattern = re.compile(rf"^[#;\s]*{re.escape(key)}\s*=.*$", re.M)
+                    if key_pattern.search(sec_block):
+                        new_sec = key_pattern.sub(f"{key} = {value}", sec_block, count=1)
+                    else:
+                        new_sec = sec_block.rstrip() + f"\n{key} = {value}\n"
+                    content = content[:m.start()] + new_sec + content[m.end():]
+
+            try:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+                self._cmd.run(["chown", f"{cape_user}:{cape_user}", filepath], quiet=True)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to write {filepath}: {e}")
+                return False
+
+        updated = 0
+        for path, section, key, value in target_confs:
+            if _update_file(path, section, key, value):
+                updated += 1
+
+        state_label = "ENABLED" if enabled else "DISABLED"
+        logger.info(f"CAPEv2 Web UI task deletion has been {state_label} in configuration files ({updated} updated).")
+
+        if restart_service:
+            logger.info("Restarting cape-web service to apply changes...")
+            res = self._cmd.run(["systemctl", "restart", "cape-web"])
+            if res.success:
+                logger.info("cape-web restarted successfully.")
+                print(f"[*] Web UI delete button is now {state_label}! (cape-web restarted)")
+            else:
+                logger.warning(f"Could not restart cape-web: {res.stderr}")
+
+        return True
+
+    def enable_ui_delete(self) -> bool:
+        """Enable analysis deletion in the Web UI and restart cape-web."""
+        return self.set_ui_delete(enabled=True, restart_service=True)
+
+    def disable_ui_delete(self) -> bool:
+        """Disable analysis deletion in the Web UI and restart cape-web."""
+        return self.set_ui_delete(enabled=False, restart_service=True)
 
