@@ -21,21 +21,100 @@ fi
 CAPE_ROOT="/opt/CAPEv2"
 CAPE_USER="cape"
 
-# Detect Python interpreter
-if [[ -f "${CAPE_ROOT}/venv/bin/python3" ]]; then
-    PYTHON_BIN="${CAPE_ROOT}/venv/bin/python3"
-elif [[ -f "${CAPE_ROOT}/poetry.lock" ]] && command -v poetry &>/dev/null; then
-    PYTHON_BIN="poetry run python"
-else
-    PYTHON_BIN="python3"
-fi
+# Robust Python interpreter detection
+detect_python() {
+    local candidate=""
 
+    # 1. Check systemd services (primary source of truth: whatever systemd uses to run CAPE)
+    for svc in /etc/systemd/system/cape.service /etc/systemd/system/cape-processor.service /etc/systemd/system/cape-web.service; do
+        if [[ -f "$svc" ]]; then
+            local svc_py
+            svc_py=$(grep -oP '^ExecStart=\K\S+' "$svc" 2>/dev/null || true)
+            if [[ -n "$svc_py" && -x "$svc_py" ]]; then
+                if "$svc_py" -c "import sqlalchemy" &>/dev/null || sudo -u "$CAPE_USER" "$svc_py" -c "import sqlalchemy" &>/dev/null; then
+                    echo "$svc_py"
+                    return 0
+                fi
+            fi
+        fi
+    done
+
+    # 2. Check virtual environment in CAPE_ROOT (.venv or venv)
+    for candidate in \
+        "${CAPE_ROOT}/.venv/bin/python3" \
+        "${CAPE_ROOT}/.venv/bin/python" \
+        "${CAPE_ROOT}/venv/bin/python3" \
+        "${CAPE_ROOT}/venv/bin/python"; do
+        if [[ -x "$candidate" ]]; then
+            if "$candidate" -c "import sqlalchemy" &>/dev/null || sudo -u "$CAPE_USER" "$candidate" -c "import sqlalchemy" &>/dev/null; then
+                echo "$candidate"
+                return 0
+            fi
+        fi
+    done
+
+    # 3. Check Poetry virtual environments
+    for poetry_bin in "/etc/poetry/bin/poetry" "/home/${CAPE_USER}/.local/bin/poetry" "/usr/local/bin/poetry" "$(command -v poetry 2>/dev/null || true)"; do
+        if [[ -n "$poetry_bin" && -x "$poetry_bin" ]]; then
+            local poetry_env
+            poetry_env=$(sudo -u "$CAPE_USER" "$poetry_bin" -C "$CAPE_ROOT" env info -p 2>/dev/null || true)
+            if [[ -n "$poetry_env" && -x "${poetry_env}/bin/python" ]]; then
+                if "${poetry_env}/bin/python" -c "import sqlalchemy" &>/dev/null || sudo -u "$CAPE_USER" "${poetry_env}/bin/python" -c "import sqlalchemy" &>/dev/null; then
+                    echo "${poetry_env}/bin/python"
+                    return 0
+                fi
+            fi
+        fi
+    done
+
+    # Check cached virtualenvs in user directories
+    for candidate in \
+        /home/"${CAPE_USER}"/.cache/pypoetry/virtualenvs/*/bin/python \
+        /root/.cache/pypoetry/virtualenvs/*/bin/python \
+        /home/"${CAPE_USER}"/.local/share/virtualenvs/*/bin/python; do
+        if [[ -x "$candidate" ]]; then
+            if "$candidate" -c "import sqlalchemy" &>/dev/null || sudo -u "$CAPE_USER" "$candidate" -c "import sqlalchemy" &>/dev/null; then
+                echo "$candidate"
+                return 0
+            fi
+        fi
+    done
+
+    # 4. Check system python3
+    if command -v python3 &>/dev/null; then
+        if python3 -c "import sqlalchemy" &>/dev/null || sudo -u "$CAPE_USER" python3 -c "import sqlalchemy" &>/dev/null; then
+            echo "python3"
+            return 0
+        fi
+    fi
+
+    # 5. Fallback paths (if sqlalchemy check was inconclusive)
+    for candidate in \
+        "${CAPE_ROOT}/.venv/bin/python3" \
+        "${CAPE_ROOT}/.venv/bin/python" \
+        "${CAPE_ROOT}/venv/bin/python3" \
+        "${CAPE_ROOT}/venv/bin/python"; do
+        if [[ -x "$candidate" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    echo "python3"
+}
+
+PYTHON_BIN=$(detect_python)
 CLEANER_SCRIPT="${CAPE_ROOT}/utils/cleaners.py"
 
 if [[ ! -f "$CLEANER_SCRIPT" ]]; then
     echo "[-] Error: CAPEv2 cleaner script not found at ${CLEANER_SCRIPT}"
     exit 1
 fi
+
+run_cleaner() {
+    cd "$CAPE_ROOT"
+    sudo -u "$CAPE_USER" env PYTHONPATH="$CAPE_ROOT" "$PYTHON_BIN" "$CLEANER_SCRIPT" "$@"
+}
 
 show_help() {
     cat <<EOF
@@ -44,9 +123,10 @@ CAPEv2 Analysis Cleanup Helper
 Usage: sudo $0 [OPTION]
 
 Options:
-  --all               Completely delete ALL analysis tasks, stored binaries,
+  --all, -all         Completely delete ALL analysis tasks, stored binaries,
                       MongoDB records, and reset task counter to 1.
                       (Safely stops and restarts CAPE services during wipe)
+                      Pass -y to bypass confirmation: sudo $0 --all -y
 
   --days <N>          Delete all analysis tasks older than <N> days.
                       Example: sudo $0 --days 14
@@ -69,15 +149,21 @@ Options:
 EOF
 }
 
-if [[ $# -eq 0 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+if [[ $# -eq 0 ]] || [[ "$1" =~ ^(-h|--help|help|-\?)$ ]]; then
     show_help
     exit 0
 fi
 
+echo "[*] Using Python: $PYTHON_BIN"
+
 case "$1" in
-    --all)
+    --all|-all|--clean|-clean|-a)
         echo "[*] WARNING: This will permanently delete ALL analysis tasks and reset database!"
-        read -rp "Are you sure you want to proceed? [y/N]: " confirm
+        if [[ "${2:-}" =~ ^(-y|--yes|-f|--force)$ ]]; then
+            confirm="y"
+        else
+            read -rp "Are you sure you want to proceed? [y/N]: " confirm
+        fi
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             echo "[*] Aborted by user."
             exit 0
@@ -87,69 +173,69 @@ case "$1" in
         systemctl stop cape cape-processor cape-web || true
 
         echo "[*] Running CAPE full cleanup..."
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" --clean
+        run_cleaner --clean
 
         echo "[*] Starting CAPE services..."
         systemctl start cape cape-processor cape-web || true
         echo "[+] Full cleanup complete. All previous analyses deleted."
         ;;
 
-    --days)
+    --days|-days|-d)
         if [[ -z "${2:-}" ]]; then
             echo "[-] Error: --days requires a number of days (e.g. --days 7)"
             exit 1
         fi
         echo "[*] Deleting analysis tasks older than $2 days..."
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" --days "$2"
+        run_cleaner --days "$2"
         echo "[+] Done."
         ;;
 
-    --failed)
+    --failed|-failed|-f)
         echo "[*] Deleting all failed analysis tasks..."
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" --failed
+        run_cleaner --failed
         echo "[+] Done."
         ;;
 
-    --task)
+    --task|-task|--tasks|-tasks|--delete-tasks|-t)
         if [[ -z "${2:-}" ]]; then
             echo "[-] Error: --task requires task ID(s) (e.g. --task 11 or --task 11,14,15)"
             exit 1
         fi
         echo "[*] Deleting task(s): $2..."
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" --delete-tasks "$2"
+        run_cleaner --delete-tasks "$2"
         echo "[+] Done."
         ;;
 
-    --malscore)
+    --malscore|-malscore|-m)
         if [[ -z "${2:-}" ]]; then
             echo "[-] Error: --malscore requires a threshold (e.g. --malscore 2.0)"
             exit 1
         fi
         echo "[*] Deleting tasks with malscore <= $2..."
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" --malscore "$2"
+        run_cleaner --malscore "$2"
         echo "[+] Done."
         ;;
 
-    --pcap)
+    --pcap|-pcap)
         echo "[*] Cleaning PCAP captures..."
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" --pcap
+        run_cleaner --pcap
         echo "[+] Done."
         ;;
 
-    --bson)
+    --bson|-bson)
         echo "[*] Cleaning MongoDB BSON dumps..."
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" --bson
+        run_cleaner --bson
         echo "[+] Done."
         ;;
 
-    --suricata)
+    --suricata|-suricata)
         echo "[*] Cleaning Suricata logs..."
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" --suricata
+        run_cleaner --suricata
         echo "[+] Done."
         ;;
 
     *)
         echo "[*] Forwarding options to CAPEv2 cleaner: $*"
-        sudo -u "$CAPE_USER" $PYTHON_BIN "$CLEANER_SCRIPT" "$@"
+        run_cleaner "$@"
         ;;
 esac
